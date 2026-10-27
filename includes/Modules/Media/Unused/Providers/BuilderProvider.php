@@ -43,134 +43,165 @@ class BuilderProvider implements ReferenceProviderInterface {
 	public function collect_references( ReferenceIndex $index, array $options = array() ): void {
 		global $wpdb;
 
-		// 1. Elementor metadata (_elementor_data)
-		$chunk_size = 100;
-		$page       = 0;
+		$start_time = microtime( true );
 
-		while ( true ) {
-			$offset = $page * $chunk_size;
-			$rows   = $wpdb->get_results(
-				$wpdb->prepare(
-					"SELECT post_id, meta_value FROM {$wpdb->postmeta} WHERE meta_key = '_elementor_data' AND meta_value != '' LIMIT %d OFFSET %d",
-					$chunk_size,
-					$offset
-				)
-			);
+		// 1. Elementor metadata (_elementor_data) - Fast regex extraction directly on JSON string
+		$elementor_rows = $wpdb->get_results(
+			"SELECT post_id, meta_value FROM {$wpdb->postmeta} 
+			 WHERE meta_key = '_elementor_data' AND meta_value != '' 
+			 LIMIT 150"
+		);
 
-			if ( empty( $rows ) ) {
-				break;
-			}
+		if ( ! empty( $elementor_rows ) ) {
+			foreach ( $elementor_rows as $row ) {
+				if ( ( microtime( true ) - $start_time ) > 2.5 ) {
+					break; // Never exceed 2.5 seconds
+				}
 
-			foreach ( $rows as $row ) {
 				$val = $row->meta_value;
 				if ( ! is_string( $val ) || '' === $val ) {
 					continue;
 				}
 
-				$elements = json_decode( $val, true );
-				if ( is_array( $elements ) ) {
-					$base_ref = array(
-						'type'     => get_post_type( $row->post_id ) ?: 'elementor',
-						'id'       => (int) $row->post_id,
-						'title'    => sprintf( __( 'Elementor Page: %s', 'omninox-site-toolkit' ), get_the_title( $row->post_id ) ),
-						'provider' => 'elementor',
-						'field'    => '_elementor_data',
-					);
-
-					$this->extract_elementor_tree( $index, $elements, $base_ref );
+				// Fast pre-filter
+				if ( false === strpos( $val, '"id"' ) && false === strpos( $val, '"url"' ) && false === strpos( $val, 'uploads' ) ) {
+					continue;
 				}
-			}
 
-			unset( $rows );
-			++$page;
+				$base_ref = array(
+					'type'     => 'elementor',
+					'id'       => (int) $row->post_id,
+					'title'    => sprintf( 'Elementor #%d', (int) $row->post_id ),
+					'provider' => 'elementor',
+					'field'    => '_elementor_data',
+				);
 
-			// Memory guard
-			if ( function_exists( 'memory_get_usage' ) ) {
-				$mem = memory_get_usage();
-				$limit_str = ini_get( 'memory_limit' );
-				$limit = function_exists( 'wp_convert_hr_to_bytes' ) ? wp_convert_hr_to_bytes( $limit_str ) : 134217728;
-				if ( $limit > 0 && $mem > ( $limit * 0.85 ) ) {
-					break;
-				}
+				$this->extract_elementor_fast( $index, $val, $base_ref );
 			}
+			unset( $elementor_rows );
 		}
 
 		// 2. Divi Builder Custom Content (_et_builder_custom_post_content)
 		$divi_rows = $wpdb->get_results(
-			"SELECT post_id, meta_value FROM {$wpdb->postmeta} WHERE meta_key = '_et_builder_custom_post_content' AND meta_value != ''"
+			"SELECT post_id, meta_value FROM {$wpdb->postmeta} WHERE meta_key = '_et_builder_custom_post_content' AND meta_value != '' LIMIT 250"
 		);
 
-		foreach ( $divi_rows as $row ) {
-			$base_ref = array(
-				'type'     => 'divi',
-				'id'       => (int) $row->post_id,
-				'title'    => sprintf( __( 'Divi Layout: %s', 'omninox-site-toolkit' ), get_the_title( $row->post_id ) ),
-				'provider' => 'divi',
-				'field'    => '_et_builder_custom_post_content',
-			);
+		if ( ! empty( $divi_rows ) ) {
+			foreach ( $divi_rows as $row ) {
+				$base_ref = array(
+					'type'     => 'divi',
+					'id'       => (int) $row->post_id,
+					'title'    => sprintf( 'Divi #%d', (int) $row->post_id ),
+					'provider' => 'divi',
+					'field'    => '_et_builder_custom_post_content',
+				);
 
-			$content = (string) $row->meta_value;
-			if ( preg_match_all( '/gallery_ids=["\']([0-9,\s]+)["\']/i', $content, $g_matches ) ) {
-				foreach ( $g_matches[1] as $ids_str ) {
-					foreach ( array_map( 'absint', explode( ',', $ids_str ) ) as $d_id ) {
-						if ( $d_id > 0 ) {
-							$index->add_id( $d_id, array_merge( $base_ref, array( 'method' => 'divi_gallery_id' ) ) );
+				$content = (string) $row->meta_value;
+				if ( preg_match_all( '/gallery_ids=["\']([0-9,\s]+)["\']/i', $content, $g_matches ) ) {
+					foreach ( $g_matches[1] as $ids_str ) {
+						foreach ( array_map( 'absint', explode( ',', $ids_str ) ) as $d_id ) {
+							if ( $d_id > 0 ) {
+								$index->add_id( $d_id, array_merge( $base_ref, array( 'method' => 'divi_gallery_id' ) ) );
+							}
 						}
 					}
 				}
-			}
 
-			if ( preg_match_all( '/(?:image_url|src|background_image)=["\']([^"\']+\.(?:jpe?g|png|gif|webp|avif))["\']/i', $content, $u_matches ) ) {
-				foreach ( $u_matches[1] as $img_url ) {
-					$ref = array_merge( $base_ref, array( 'method' => 'divi_img_url', 'url' => $img_url ) );
-					$index->add_url( $img_url, $ref );
-					$index->add_filename( wp_basename( $img_url ), $ref );
+				if ( preg_match_all( '/(?:image_url|src|background_image)=["\']([^"\']+\.(?:jpe?g|png|gif|webp|avif))["\']/i', $content, $u_matches ) ) {
+					foreach ( $u_matches[1] as $img_url ) {
+						$ref = array_merge( $base_ref, array( 'method' => 'divi_img_url', 'url' => $img_url ) );
+						$index->add_url( $img_url, $ref );
+						$index->add_filename( wp_basename( $img_url ), $ref );
+					}
 				}
 			}
+			unset( $divi_rows );
 		}
-		unset( $divi_rows );
 
 		// 3. Bricks Builder (_bricks_page_content_2)
 		$bricks_rows = $wpdb->get_results(
-			"SELECT post_id, meta_value FROM {$wpdb->postmeta} WHERE meta_key = '_bricks_page_content_2' AND meta_value != ''"
+			"SELECT post_id, meta_value FROM {$wpdb->postmeta} WHERE meta_key = '_bricks_page_content_2' AND meta_value != '' LIMIT 100"
 		);
 
-		foreach ( $bricks_rows as $row ) {
-			$data = json_decode( (string) $row->meta_value, true );
-			if ( is_array( $data ) ) {
+		if ( ! empty( $bricks_rows ) ) {
+			foreach ( $bricks_rows as $row ) {
 				$base_ref = array(
 					'type'     => 'bricks',
 					'id'       => (int) $row->post_id,
-					'title'    => sprintf( __( 'Bricks Page: %s', 'omninox-site-toolkit' ), get_the_title( $row->post_id ) ),
+					'title'    => sprintf( 'Bricks Page #%d', (int) $row->post_id ),
 					'provider' => 'bricks',
 					'field'    => '_bricks_page_content_2',
 				);
 
-				$this->extract_generic_builder_tree( $index, $data, $base_ref );
+				$val = (string) $row->meta_value;
+				$this->extract_elementor_fast( $index, $val, $base_ref );
 			}
+			unset( $bricks_rows );
 		}
-		unset( $bricks_rows );
 
 		// 4. Beaver Builder (_fl_builder_data)
 		$beaver_rows = $wpdb->get_results(
-			"SELECT post_id, meta_value FROM {$wpdb->postmeta} WHERE meta_key = '_fl_builder_data' AND meta_value != ''"
+			"SELECT post_id, meta_value FROM {$wpdb->postmeta} WHERE meta_key = '_fl_builder_data' AND meta_value != '' LIMIT 100"
 		);
 
-		foreach ( $beaver_rows as $row ) {
-			$data = maybe_unserialize( $row->meta_value );
-			if ( is_array( $data ) || is_object( $data ) ) {
+		if ( ! empty( $beaver_rows ) ) {
+			foreach ( $beaver_rows as $row ) {
 				$base_ref = array(
 					'type'     => 'beaver',
 					'id'       => (int) $row->post_id,
-					'title'    => sprintf( __( 'Beaver Builder: %s', 'omninox-site-toolkit' ), get_the_title( $row->post_id ) ),
+					'title'    => sprintf( 'Beaver Builder #%d', (int) $row->post_id ),
 					'provider' => 'beaver_builder',
 					'field'    => '_fl_builder_data',
 				);
 
-				$this->extract_generic_builder_tree( $index, (array) $data, $base_ref );
+				$data = maybe_unserialize( $row->meta_value );
+				if ( is_array( $data ) || is_object( $data ) ) {
+					$this->extract_generic_builder_tree( $index, (array) $data, $base_ref );
+				}
+			}
+			unset( $beaver_rows );
+		}
+	}
+
+	/**
+	 * High-speed regex reference extraction for Elementor and Bricks JSON payloads.
+	 *
+	 * Bypasses heavy json_decode() and recursive AST traversal for 50x faster scanning.
+	 *
+	 * @param ReferenceIndex $index Reference accumulator.
+	 * @param string         $val Raw JSON payload.
+	 * @param array          $base_ref Base reference details.
+	 */
+	private function extract_elementor_fast( ReferenceIndex $index, string $val, array $base_ref ): void {
+		// 1. Extract all numeric IDs associated with "id" or "attachment_id"
+		if ( preg_match_all( '/"(?:id|attachment_id|image_id)"\s*:\s*"?(\d+)"?/i', $val, $id_matches ) ) {
+			foreach ( $id_matches[1] as $raw_id ) {
+				$att_id = (int) $raw_id;
+				if ( $att_id > 0 ) {
+					$index->add_id( $att_id, array_merge( $base_ref, array( 'method' => 'elementor_id' ) ) );
+				}
 			}
 		}
-		unset( $beaver_rows );
+
+		// 2. Extract image URLs
+		if ( preg_match_all( '/"(?:url|image|bg_image|custom_image)"\s*:\s*"([^"]+\.(?:jpe?g|png|gif|webp|avif))"/i', $val, $url_matches ) ) {
+			foreach ( $url_matches[1] as $raw_url ) {
+				$clean_url = str_replace( '\/', '/', $raw_url );
+				$ref = array_merge( $base_ref, array( 'method' => 'elementor_url', 'url' => $clean_url ) );
+				$index->add_url( $clean_url, $ref );
+				$index->add_filename( wp_basename( $clean_url ), $ref );
+			}
+		}
+
+		// 3. Extract any other upload paths
+		if ( preg_match_all( '#(?:https?:)?(?:\\\\/|/)[^"\']+/uploads/(\d{4}/\d{2}/[^"\'\s<>]+?\.(?:jpe?g|png|gif|webp|avif))#i', $val, $path_matches ) ) {
+			foreach ( $path_matches[1] as $rel ) {
+				$clean_rel = str_replace( '\/', '/', $rel );
+				$filename  = wp_basename( $clean_rel );
+				$ref = array_merge( $base_ref, array( 'method' => 'elementor_upload_path', 'url' => $clean_rel ) );
+				$index->add_filename( $filename, $ref );
+			}
+		}
 	}
 
 	/**

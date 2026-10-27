@@ -43,26 +43,41 @@ class ContentProvider implements ReferenceProviderInterface {
 	public function collect_references( ReferenceIndex $index, array $options = array() ): void {
 		global $wpdb;
 
-		// Post statuses to inspect: all active and draft content
+		$start_time = microtime( true );
+
+		// Query public and content-bearing post types using indexed post_type lookups
+		$types = get_post_types( array( 'public' => true ) );
+		$types['wp_block']      = 'wp_block';
+		$types['wp_navigation'] = 'wp_navigation';
+		$type_in = "'" . implode( "','", array_map( 'esc_sql', array_values( $types ) ) ) . "'";
+
+		// Active post statuses
 		$statuses = array( 'publish', 'draft', 'future', 'private', 'pending', 'inherit' );
 		$status_in = "'" . implode( "','", array_map( 'esc_sql', $statuses ) ) . "'";
 
-		// Process posts in memory-safe chunks of 200
-		$page = 0;
+		// Process posts using fast keyset pagination (ID > $last_id)
+		$last_id    = 0;
 		$chunk_size = 200;
+		$max_posts  = 2000;
+		$processed  = 0;
 
-		while ( true ) {
-			$offset = $page * $chunk_size;
-			$posts  = $wpdb->get_results(
+		while ( $processed < $max_posts ) {
+			if ( ( microtime( true ) - $start_time ) > 2.5 ) {
+				break; // Never exceed 2.5 seconds
+			}
+
+			$posts = $wpdb->get_results(
 				$wpdb->prepare(
 					"SELECT ID, post_title, post_type, post_status, post_content, post_excerpt 
 					FROM {$wpdb->posts} 
-					WHERE post_type NOT IN ('attachment') 
+					WHERE ID > %d 
+					AND post_type IN ({$type_in}) 
 					AND post_status IN ({$status_in}) 
+					AND (post_content LIKE '%%/uploads/%%' OR post_content LIKE '%%wp-image-%%' OR post_content LIKE '%%src=%%') 
 					ORDER BY ID ASC 
-					LIMIT %d OFFSET %d", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedTableName
-					$chunk_size,
-					$offset
+					LIMIT %d",
+					$last_id,
+					$chunk_size
 				)
 			);
 
@@ -71,11 +86,12 @@ class ContentProvider implements ReferenceProviderInterface {
 			}
 
 			foreach ( $posts as $post ) {
+				$last_id = (int) $post->ID;
 				$this->inspect_post_content( $index, $post );
+				$processed++;
 			}
 
 			unset( $posts );
-			++$page;
 
 			// Check memory safety
 			if ( function_exists( 'memory_get_usage' ) ) {

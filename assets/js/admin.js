@@ -4846,7 +4846,7 @@
 	function startUnusedScan() {
 		state.unused.scanning = true;
 		state.unused.cancelling = false;
-		state.unused.scanProgress = 5;
+		state.unused.scanProgress = 8;
 		state.unused.scanStep = __('Building AST reference index across content, theme, and builders…', 'omninox-site-toolkit');
 		render();
 
@@ -4859,6 +4859,9 @@
 				render();
 				return;
 			}
+			state.unused.scanProgress = 15;
+			state.unused.scanStep = res.message || sprintf(__('Reference index ready. Scanning %d images…', 'omninox-site-toolkit'), res.total || 0);
+			render();
 			stepUnusedScan(0, res.total || 0);
 		}).catch(function (err) {
 			state.unused.scanning = false;
@@ -4876,7 +4879,7 @@
 			return;
 		}
 
-		var batch = 30;
+		var batch = 100;
 		api('/fix/media', {
 			method: 'POST',
 			body: { action: 'unused_scan_step', params: { offset: offset, batch: batch } }
@@ -4889,23 +4892,24 @@
 				return;
 			}
 
-			if (res.status === 'complete' || !res.status) {
+			if (res.done === true || res.status === 'complete') {
 				state.unused.scanning = false;
 				state.unused.scanProgress = 100;
-				state.unused.scanStep = __('Scan complete!', 'omninox-site-toolkit');
+				state.unused.scanStep = __('Scan complete! Loading results…', 'omninox-site-toolkit');
 				render();
 				toast(__('Unused media scan completed.', 'omninox-site-toolkit'));
 				loadUnusedResults(1);
 			} else {
 				var nextOffset = res.offset || (offset + batch);
 				var totalImages = res.total || total || 1;
-				var pct = Math.min(98, Math.max(8, Math.round((nextOffset / totalImages) * 100)));
+				var pct = Math.min(99, Math.max(15, Math.round((nextOffset / totalImages) * 100)));
 				state.unused.scanProgress = pct;
 				state.unused.scanStep = sprintf(
-					/* translators: 1: current offset, 2: total images */
-					__('Analyzing image references: %1$d of %2$d processed…', 'omninox-site-toolkit'),
+					/* translators: 1: current offset, 2: total images, 3: percentage */
+					__('Analyzing image references: %1$d of %2$d processed (%3$d%%)…', 'omninox-site-toolkit'),
 					Math.min(nextOffset, totalImages),
-					totalImages
+					totalImages,
+					pct
 				);
 				render();
 				stepUnusedScan(nextOffset, totalImages);

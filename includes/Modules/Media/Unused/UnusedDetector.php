@@ -143,23 +143,25 @@ class UnusedDetector {
 		// Cache reference index
 		@file_put_contents( self::get_index_cache_file(), wp_json_encode( $index->to_array() ) );
 
-		// Count total media attachments to scan
-		$total_attachments = (int) ( new \WP_Query(
-			array(
-				'post_type'      => 'attachment',
-				'post_mime_type' => 'image',
-				'post_status'    => 'inherit',
-				'posts_per_page' => 1,
-				'fields'         => 'ids',
-			)
-		) )->found_posts;
+		// Fetch all attachment IDs to scan in memory (lightweight array of ints)
+		global $wpdb;
+		$all_attachment_ids = $wpdb->get_col(
+			"SELECT ID FROM {$wpdb->posts} 
+			 WHERE post_type = 'attachment' 
+			 AND post_mime_type LIKE 'image/%' 
+			 AND post_status = 'inherit' 
+			 ORDER BY ID DESC"
+		);
+		$all_attachment_ids = array_map( 'intval', (array) $all_attachment_ids );
+		$total_attachments  = count( $all_attachment_ids );
 
-		// Initialize empty snapshot
+		// Initialize snapshot with indexed list of attachment IDs
 		$snapshot = array(
 			'started_at'        => time(),
 			'last_updated'      => time(),
 			'total_attachments' => $total_attachments,
 			'scanned_count'     => 0,
+			'all_ids'           => $all_attachment_ids,
 			'stats'             => array(
 				'used'             => 0,
 				'likely_unused'    => 0,
@@ -245,27 +247,39 @@ class UnusedDetector {
 		$basedir = trailingslashit( $uploads['basedir'] );
 		$baseurl = trailingslashit( $uploads['baseurl'] );
 
-		// Fetch batch of attachment IDs
-		$batch = max( 10, min( 50, $batch ) );
-		$query = new \WP_Query(
-			array(
-				'post_type'      => 'attachment',
-				'post_mime_type' => 'image',
-				'post_status'    => 'inherit',
-				'posts_per_page' => $batch,
-				'offset'         => $offset,
-				'orderby'        => 'ID',
-				'order'          => 'DESC',
-				'fields'         => 'ids',
-			)
-		);
+		// Retrieve attachment IDs from pre-indexed snapshot or fallback query
+		$batch = max( 10, min( 150, $batch ) );
+		if ( ! empty( $snapshot['all_ids'] ) && is_array( $snapshot['all_ids'] ) ) {
+			$ids   = array_slice( $snapshot['all_ids'], $offset, $batch );
+			$total = count( $snapshot['all_ids'] );
+		} else {
+			global $wpdb;
+			$ids = $wpdb->get_col(
+				$wpdb->prepare(
+					"SELECT ID FROM {$wpdb->posts} 
+					 WHERE post_type = 'attachment' 
+					 AND post_mime_type LIKE 'image/%%' 
+					 AND post_status = 'inherit' 
+					 ORDER BY ID DESC 
+					 LIMIT %d OFFSET %d",
+					$batch,
+					$offset
+				)
+			);
+			$ids   = array_map( 'intval', (array) $ids );
+			$total = (int) $wpdb->get_var(
+				"SELECT COUNT(ID) FROM {$wpdb->posts} 
+				 WHERE post_type = 'attachment' 
+				 AND post_mime_type LIKE 'image/%%' 
+				 AND post_status = 'inherit'"
+			);
+		}
 
-		$ids   = $query->posts;
-		$total = (int) $query->found_posts;
 		$snapshot['total_attachments'] = $total;
 
 		if ( empty( $ids ) ) {
 			return array(
+				'status'  => 'complete',
 				'done'    => true,
 				'offset'  => $total,
 				'total'   => $total,
@@ -274,7 +288,8 @@ class UnusedDetector {
 			);
 		}
 
-		// Prime meta cache for IDs in this batch
+		// Prime post cache and meta cache for this entire batch in 2 fast queries
+		_prime_post_caches( $ids, false, false );
 		update_meta_cache( 'post', $ids );
 
 		$scanned_in_step = 0;
@@ -303,8 +318,9 @@ class UnusedDetector {
 			if ( $file_rel ) {
 				$family_filenames[] = wp_basename( $file_rel );
 				$family_urls[]      = $baseurl . $file_rel;
-				if ( file_exists( $basedir . $file_rel ) ) {
-					$total_file_bytes += filesize( $basedir . $file_rel );
+				$f_size             = @filesize( $basedir . $file_rel );
+				if ( false !== $f_size ) {
+					$total_file_bytes += $f_size;
 				}
 
 				$sub_dir = trailingslashit( dirname( $file_rel ) );
@@ -314,8 +330,9 @@ class UnusedDetector {
 							$family_filenames[] = $s_info['file'];
 							$family_urls[]      = $baseurl . $sub_dir . $s_info['file'];
 							$s_path             = $basedir . $sub_dir . $s_info['file'];
-							if ( file_exists( $s_path ) ) {
-								$total_file_bytes += filesize( $s_path );
+							$s_size             = @filesize( $s_path );
+							if ( false !== $s_size ) {
+								$total_file_bytes += $s_size;
 							}
 						}
 					}
@@ -326,8 +343,9 @@ class UnusedDetector {
 				foreach ( (array) ( $webp_rec['files'] ?? array() ) as $w_file ) {
 					$family_filenames[] = wp_basename( $w_file );
 					$family_urls[]      = $baseurl . $w_file;
-					if ( file_exists( $basedir . $w_file ) ) {
-						$total_file_bytes += filesize( $basedir . $w_file );
+					$w_size             = @filesize( $basedir . $w_file );
+					if ( false !== $w_size ) {
+						$total_file_bytes += $w_size;
 					}
 				}
 			}
@@ -355,7 +373,7 @@ class UnusedDetector {
 					$status = self::STATUS_USED;
 				} else {
 					// If original file doesn't exist on disk, mark as unknown/broken
-					if ( ! $file_rel || ! file_exists( $basedir . $file_rel ) ) {
+					if ( ! $file_rel || false === @filesize( $basedir . $file_rel ) ) {
 						$status = self::STATUS_UNKNOWN;
 						$protection_reason = __( 'Physical file missing or unreadable.', 'omninox-site-toolkit' );
 					} else {
@@ -406,6 +424,7 @@ class UnusedDetector {
 		@file_put_contents( $snapshot_file, wp_json_encode( $snapshot ) );
 
 		return array(
+			'status'  => $is_done ? 'complete' : 'running',
 			'done'    => $is_done,
 			'offset'  => $processed,
 			'total'   => $total,

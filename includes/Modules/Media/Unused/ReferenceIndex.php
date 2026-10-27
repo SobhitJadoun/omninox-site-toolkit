@@ -323,7 +323,7 @@ class ReferenceIndex {
 			'field'       => sanitize_text_field( $ref['field'] ?? 'content' ),
 			'url'         => esc_url_raw( $ref['url'] ?? '' ),
 			'method'      => sanitize_key( $ref['method'] ?? 'id' ),
-			'detected_at' => current_time( 'mysql' ),
+			'detected_at' => gmdate( 'Y-m-d H:i:s' ),
 		);
 	}
 
