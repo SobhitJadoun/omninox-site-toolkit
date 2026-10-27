@@ -108,6 +108,13 @@ class UnusedDetector {
 	 * @return array Initial scan state.
 	 */
 	public static function start_scan( array $params = array() ): array {
+		if ( function_exists( 'wp_raise_memory_limit' ) ) {
+			wp_raise_memory_limit( 'admin' );
+		}
+		if ( function_exists( 'set_time_limit' ) ) {
+			@set_time_limit( 300 );
+		}
+
 		$providers = self::get_providers();
 		$index     = new ReferenceIndex();
 		$options   = self::get_settings();
@@ -115,7 +122,21 @@ class UnusedDetector {
 		// Run each registered reference provider to build the complete index
 		foreach ( $providers as $provider ) {
 			if ( $provider instanceof ReferenceProviderInterface ) {
-				$provider->collect_references( $index, $options );
+				try {
+					$provider->collect_references( $index, $options );
+				} catch ( \Throwable $e ) {
+					// Guard against third-party or builder provider failure without halting scan
+					if ( class_exists( '\OmninoxSiteToolkit\Database\LogRepository' ) ) {
+						\OmninoxSiteToolkit\Database\LogRepository::record(
+							array(
+								'type'    => 'action',
+								'level'   => 'warning',
+								'message' => sprintf( 'Media reference provider "%s" halted safely: %s', $provider->get_label(), $e->getMessage() ),
+								'source'  => 'media/unused_scan_start',
+							)
+						);
+					}
+				}
 			}
 		}
 
@@ -167,6 +188,13 @@ class UnusedDetector {
 	 * @return array Step progress.
 	 */
 	public static function step_scan( int $offset = 0, int $batch = 30 ): array {
+		if ( function_exists( 'wp_raise_memory_limit' ) ) {
+			wp_raise_memory_limit( 'admin' );
+		}
+		if ( function_exists( 'set_time_limit' ) ) {
+			@set_time_limit( 120 );
+		}
+
 		$start_time = microtime( true );
 
 		// Guard timeout
@@ -249,16 +277,18 @@ class UnusedDetector {
 		// Prime meta cache for IDs in this batch
 		update_meta_cache( 'post', $ids );
 
+		$scanned_in_step = 0;
 		foreach ( $ids as $att_id ) {
-			if ( ( microtime( true ) - $start_time ) > $time_budget ) {
+			if ( $scanned_in_step > 0 && ( microtime( true ) - $start_time ) > $time_budget ) {
 				break;
 			}
-			if ( $safe_mem_limit > 0 && memory_get_usage() > $safe_mem_limit ) {
+			if ( $scanned_in_step > 0 && $safe_mem_limit > 0 && memory_get_usage() > $safe_mem_limit ) {
 				break;
 			}
 
 			$post = get_post( $att_id );
 			if ( ! $post ) {
+				$scanned_in_step++;
 				continue;
 			}
 
@@ -363,9 +393,11 @@ class UnusedDetector {
 				'reference_count'   => count( $refs_list ),
 				'references'        => array_slice( $refs_list, 0, 10 ),
 			);
+
+			$scanned_in_step++;
 		}
 
-		$processed = $offset + count( $ids );
+		$processed = $offset + ( $scanned_in_step > 0 ? $scanned_in_step : count( $ids ) );
 		$is_done   = ( $processed >= $total );
 
 		$snapshot['scanned_count'] = $processed;

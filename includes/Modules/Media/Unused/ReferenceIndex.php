@@ -36,6 +36,13 @@ class ReferenceIndex {
 	private array $url_map = array();
 
 	/**
+	 * Maximum references to record per unique entity.
+	 * Prevents memory exhaustion on large sites where common images (logos, icons)
+	 * appear across thousands of posts.
+	 */
+	const MAX_REFS_PER_ITEM = 25;
+
+	/**
 	 * Record an attachment ID reference.
 	 *
 	 * @param int   $attachment_id Attachment ID.
@@ -43,6 +50,10 @@ class ReferenceIndex {
 	 */
 	public function add_id( int $attachment_id, array $ref ): void {
 		if ( $attachment_id <= 0 ) {
+			return;
+		}
+
+		if ( isset( $this->id_map[ $attachment_id ] ) && count( $this->id_map[ $attachment_id ] ) >= self::MAX_REFS_PER_ITEM ) {
 			return;
 		}
 
@@ -66,6 +77,10 @@ class ReferenceIndex {
 			return;
 		}
 
+		if ( isset( $this->filename_map[ $filename ] ) && count( $this->filename_map[ $filename ] ) >= self::MAX_REFS_PER_ITEM ) {
+			return;
+		}
+
 		$key = ( $ref['type'] ?? 'post' ) . ':' . ( $ref['id'] ?? 0 ) . ':' . ( $ref['field'] ?? '' );
 		if ( isset( $this->filename_map[ $filename ][ $key ] ) ) {
 			return;
@@ -86,12 +101,111 @@ class ReferenceIndex {
 			return;
 		}
 
+		if ( isset( $this->url_map[ $normalized ] ) && count( $this->url_map[ $normalized ] ) >= self::MAX_REFS_PER_ITEM ) {
+			return;
+		}
+
 		$key = ( $ref['type'] ?? 'post' ) . ':' . ( $ref['id'] ?? 0 ) . ':' . ( $ref['field'] ?? '' );
 		if ( isset( $this->url_map[ $normalized ][ $key ] ) ) {
 			return;
 		}
 
 		$this->url_map[ $normalized ][ $key ] = $this->format_ref( $ref );
+	}
+
+	/**
+	 * Record an attachment reference by ID with optional URL and filename.
+	 *
+	 * Compatible with both positional arguments and array format across Free and Pro modules.
+	 *
+	 * @param int          $attachment_id Attachment ID.
+	 * @param array|string $type_or_ref   Type string (e.g. 'post') or full reference array.
+	 * @param int          $id            Object ID.
+	 * @param string       $provider      Provider identifier.
+	 * @param string       $field         Field name or setting key.
+	 * @param string|null  $url           Associated image URL if known.
+	 * @param string       $method        Detection method.
+	 */
+	public function add_reference( int $attachment_id, $type_or_ref = 'post', int $id = 0, string $provider = 'core', string $field = '', ?string $url = null, string $method = 'id' ): void {
+		if ( $attachment_id <= 0 ) {
+			return;
+		}
+
+		if ( is_array( $type_or_ref ) ) {
+			$ref = $type_or_ref;
+		} else {
+			$ref = array(
+				'type'     => (string) $type_or_ref,
+				'id'       => (int) $id,
+				'provider' => (string) $provider,
+				'field'    => (string) $field,
+				'url'      => (string) ( $url ?? '' ),
+				'method'   => (string) $method,
+			);
+		}
+
+		$this->add_id( $attachment_id, $ref );
+
+		if ( ! empty( $ref['url'] ) && is_string( $ref['url'] ) ) {
+			$this->add_url( $ref['url'], $ref );
+			$this->add_filename( wp_basename( $ref['url'] ), $ref );
+		}
+	}
+
+	/**
+	 * Record an attachment reference by URL and filename.
+	 *
+	 * @param string       $url         Image URL.
+	 * @param array|string $type_or_ref Type string or reference array.
+	 * @param int          $id          Object ID.
+	 * @param string       $provider    Provider identifier.
+	 * @param string       $field       Field name or setting key.
+	 * @param string       $method      Detection method.
+	 */
+	public function add_reference_by_url( string $url, $type_or_ref = 'post', int $id = 0, string $provider = 'core', string $field = '', string $method = 'url' ): void {
+		$url = trim( $url );
+		if ( '' === $url ) {
+			return;
+		}
+
+		if ( is_array( $type_or_ref ) ) {
+			$ref = $type_or_ref;
+		} else {
+			$ref = array(
+				'type'     => (string) $type_or_ref,
+				'id'       => (int) $id,
+				'provider' => (string) $provider,
+				'field'    => (string) $field,
+				'url'      => $url,
+				'method'   => (string) $method,
+			);
+		}
+
+		if ( empty( $ref['url'] ) ) {
+			$ref['url'] = $url;
+		}
+
+		$this->add_url( $url, $ref );
+		$this->add_filename( wp_basename( $url ), $ref );
+	}
+
+	/**
+	 * Safe fallback for dynamic or legacy reference recording calls.
+	 *
+	 * @param string $name Method name.
+	 * @param array  $arguments Method arguments.
+	 * @return mixed
+	 */
+	public function __call( string $name, array $arguments ) {
+		if ( 'add_reference' === $name && ! empty( $arguments ) ) {
+			$this->add_reference( ...$arguments );
+			return null;
+		}
+		if ( 'add_reference_by_url' === $name && ! empty( $arguments ) ) {
+			$this->add_reference_by_url( ...$arguments );
+			return null;
+		}
+		return null;
 	}
 
 	/**
