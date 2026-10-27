@@ -3,7 +3,7 @@
  * Plugin Name: Omninox Site Toolkit
  * Plugin URI: https://netinnovix.com/plugins/omninox-site-toolkit
  * Description: All-in-one performance, backup, security, SEO, and database optimization tools for WordPress maintenance and diagnostics.
- * Version: 1.1.0
+ * Version: 1.1.1
  * Requires at least: 6.7
  * Requires PHP: 7.2
  * Author: Net Innovix
@@ -37,7 +37,7 @@ if ( ! function_exists( 'omninox_is_valid_utf8' ) ) {
 }
 
 // Plugin constants.
-defined( 'OMNINOX_SITE_TOOLKIT_VERSION' ) || define( 'OMNINOX_SITE_TOOLKIT_VERSION', '1.1.0' );
+defined( 'OMNINOX_SITE_TOOLKIT_VERSION' ) || define( 'OMNINOX_SITE_TOOLKIT_VERSION', '1.1.1' );
 defined( 'OMNINOX_SITE_TOOLKIT_FILE' ) || define( 'OMNINOX_SITE_TOOLKIT_FILE', __FILE__ );
 defined( 'OMNINOX_SITE_TOOLKIT_PATH' ) || define( 'OMNINOX_SITE_TOOLKIT_PATH', plugin_dir_path( __FILE__ ) );
 defined( 'OMNINOX_SITE_TOOLKIT_URL' ) || define( 'OMNINOX_SITE_TOOLKIT_URL', plugin_dir_url( __FILE__ ) );
@@ -51,7 +51,7 @@ defined( 'OMNINOX_SITE_TOOLKIT_PLUGIN_URL' ) || define( 'OMNINOX_SITE_TOOLKIT_PL
 defined( 'OMNINOX_SITE_TOOLKIT_ADMIN_PAGE' ) || define( 'OMNINOX_SITE_TOOLKIT_ADMIN_PAGE', 'omninox-site-toolkit' );
 defined( 'OMNINOX_SITE_TOOLKIT_MIN_PHP' ) || define( 'OMNINOX_SITE_TOOLKIT_MIN_PHP', '7.2' );
 defined( 'OMNINOX_SITE_TOOLKIT_MIN_WP' ) || define( 'OMNINOX_SITE_TOOLKIT_MIN_WP', '6.7' );
-defined( 'OMNINOX_SITE_TOOLKIT_DB_VERSION' ) || define( 'OMNINOX_SITE_TOOLKIT_DB_VERSION', '1.1.0' );
+defined( 'OMNINOX_SITE_TOOLKIT_DB_VERSION' ) || define( 'OMNINOX_SITE_TOOLKIT_DB_VERSION', '1.1.1' );
 
 require_once OMNINOX_SITE_TOOLKIT_PATH . 'includes/Core/Autoloader.php';
 \OmninoxSiteToolkit\Core\Autoloader::register();

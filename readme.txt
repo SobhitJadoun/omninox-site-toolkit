@@ -4,7 +4,7 @@ Tags: backup, migration, performance, security, seo
 Requires at least: 6.7
 Tested up to: 7.1
 Requires PHP: 7.2
-Stable tag: 1.1.0
+Stable tag: 1.1.1
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -205,6 +205,9 @@ https://netinnovix.com/plugins/omninox-site-toolkit
 
 == Upgrade Notice ==
 
+= 1.1.1 =
+Smart Unused Image Detector with multi-provider reference index (Gutenberg, Elementor, Divi, Bricks, Themes, WooCommerce, and Custom CSS), safe isolation quarantine, and zero-loss restoration.
+
 = 1.1.0 =
 Defensive security hardening, WordPress 6.7 compatibility, updated asset presentation, and full version parity with Pro add-on.
 
@@ -218,6 +221,13 @@ UI/UX redesign with premium light theme, updated brand identity, and WordPress 6
 Security and WordPress.org compliance improvements, including safer title output, protected direct downloads, and token ownership validation.
 
 == Changelog ==
+
+= 1.1.1 =
+* Feature: Smart Unused Image Detector with AST reference detection across Gutenberg, Elementor, Divi, Bricks, Beaver Builder, Themes, WooCommerce, and Custom CSS.
+* Feature: Safe Quarantine subsystem isolating images into protected storage with JSON restoration manifests and zero-loss restore.
+* Feature: Dual-tab Media Manager interface (Unused Media & Safe Cleanup + Optimization & Formats) with Lightbox preview, references breakdown, and floating bulk action bar.
+* Performance: Non-blocking batch scanning with execution time budgeting and memory ceiling guards.
+* Security: Server-side revalidation before deletion and permission enforcement.
 
 = 1.1.0 =
 * Feature: Upgraded documentation, workflow guides, and admin asset presentation.
