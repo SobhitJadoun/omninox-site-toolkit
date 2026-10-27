@@ -183,6 +183,328 @@ class UnusedDetector {
 	}
 
 	/**
+	 * Exhaustive live cross-verification for an attachment across all WordPress database tables.
+	 *
+	 * Executes high-speed, targeted SQL checks to verify if the attachment
+	 * is used in featured images, galleries, blocks, builders, postmeta, termmeta, or options.
+	 *
+	 * @param int      $att_id Attachment ID.
+	 * @param array    $family_filenames Filenames for this attachment.
+	 * @param array    $family_urls URLs for this attachment.
+	 * @param \WP_Post $post Attachment post object.
+	 * @return array List of discovered references.
+	 */
+	public static function live_cross_verify_attachment( int $att_id, array $family_filenames = array(), array $family_urls = array(), ?\WP_Post $post = null ): array {
+		global $wpdb;
+		$refs = array();
+
+		// 1. Featured Image (_thumbnail_id)
+		$feat_posts = $wpdb->get_results(
+			$wpdb->prepare(
+				"SELECT p.ID, p.post_title, p.post_type 
+				 FROM {$wpdb->postmeta} pm 
+				 INNER JOIN {$wpdb->posts} p ON p.ID = pm.post_id 
+				 WHERE pm.meta_key = '_thumbnail_id' 
+				 AND pm.meta_value = %s 
+				 AND p.post_status NOT IN ('trash', 'auto-draft') 
+				 LIMIT 3",
+				(string) $att_id
+			),
+			ARRAY_A
+		);
+		if ( ! empty( $feat_posts ) ) {
+			foreach ( $feat_posts as $row ) {
+				$refs[] = array(
+					'type'   => $row['post_type'],
+					'id'     => (int) $row['ID'],
+					'title'  => $row['post_title'] ?: '#' . $row['ID'],
+					'field'  => '_thumbnail_id',
+					'source' => 'Featured Image',
+					'method' => 'live_meta_check',
+				);
+			}
+			return $refs;
+		}
+
+		// 2. WooCommerce Product Gallery (_product_image_gallery)
+		$gallery_posts = $wpdb->get_results(
+			$wpdb->prepare(
+				"SELECT p.ID, p.post_title, p.post_type 
+				 FROM {$wpdb->postmeta} pm 
+				 INNER JOIN {$wpdb->posts} p ON p.ID = pm.post_id 
+				 WHERE pm.meta_key = '_product_image_gallery' 
+				 AND (pm.meta_value = %s OR pm.meta_value LIKE %s OR pm.meta_value LIKE %s OR pm.meta_value LIKE %s) 
+				 AND p.post_status NOT IN ('trash', 'auto-draft') 
+				 LIMIT 3",
+				(string) $att_id,
+				(string) $att_id . ',%',
+				'%,' . (string) $att_id . ',%',
+				'%,' . (string) $att_id
+			),
+			ARRAY_A
+		);
+		if ( ! empty( $gallery_posts ) ) {
+			foreach ( $gallery_posts as $row ) {
+				$refs[] = array(
+					'type'   => $row['post_type'],
+					'id'     => (int) $row['ID'],
+					'title'  => $row['post_title'] ?: '#' . $row['ID'],
+					'field'  => '_product_image_gallery',
+					'source' => 'WooCommerce Gallery',
+					'method' => 'live_meta_check',
+				);
+			}
+			return $refs;
+		}
+
+		// 3. Post Content: Gutenberg block ID & wp-image-ID class
+		$content_posts = $wpdb->get_results(
+			$wpdb->prepare(
+				"SELECT ID, post_title, post_type 
+				 FROM {$wpdb->posts} 
+				 WHERE post_type NOT IN ('attachment', 'revision') 
+				 AND post_status NOT IN ('trash', 'auto-draft') 
+				 AND (
+					post_content LIKE %s 
+					OR post_content LIKE %s 
+					OR post_content LIKE %s
+				 ) 
+				 LIMIT 3",
+				'%wp-image-' . (int) $att_id . '%',
+				'%"id":' . (int) $att_id . '%',
+				'%"id": "' . (int) $att_id . '"%'
+			),
+			ARRAY_A
+		);
+		if ( ! empty( $content_posts ) ) {
+			foreach ( $content_posts as $row ) {
+				$refs[] = array(
+					'type'   => $row['post_type'],
+					'id'     => (int) $row['ID'],
+					'title'  => $row['post_title'] ?: '#' . $row['ID'],
+					'field'  => 'post_content',
+					'source' => 'Content (Block / ID)',
+					'method' => 'live_content_check',
+				);
+			}
+			return $refs;
+		}
+
+		// 4. Post Content: Filename match
+		$clean_filenames = array_unique( array_filter( array_map( 'wp_basename', $family_filenames ) ) );
+		foreach ( $clean_filenames as $fn ) {
+			if ( strlen( $fn ) < 4 ) {
+				continue;
+			}
+			$fn_posts = $wpdb->get_results(
+				$wpdb->prepare(
+					"SELECT ID, post_title, post_type 
+					 FROM {$wpdb->posts} 
+					 WHERE post_type NOT IN ('attachment', 'revision') 
+					 AND post_status NOT IN ('trash', 'auto-draft') 
+					 AND post_content LIKE %s 
+					 LIMIT 3",
+					'%' . $wpdb->esc_like( $fn ) . '%'
+				),
+				ARRAY_A
+			);
+			if ( ! empty( $fn_posts ) ) {
+				foreach ( $fn_posts as $row ) {
+					$refs[] = array(
+						'type'   => $row['post_type'],
+						'id'     => (int) $row['ID'],
+						'title'  => $row['post_title'] ?: '#' . $row['ID'],
+						'field'  => 'post_content',
+						'source' => 'Content (Filename: ' . $fn . ')',
+						'method' => 'live_filename_check',
+					);
+				}
+				return $refs;
+			}
+		}
+
+		// 5. Elementor Builder data (_elementor_data)
+		$elem_posts = $wpdb->get_results(
+			$wpdb->prepare(
+				"SELECT p.ID, p.post_title, p.post_type 
+				 FROM {$wpdb->postmeta} pm 
+				 INNER JOIN {$wpdb->posts} p ON p.ID = pm.post_id 
+				 WHERE pm.meta_key = '_elementor_data' 
+				 AND (
+					pm.meta_value LIKE %s 
+					OR pm.meta_value LIKE %s
+				 ) 
+				 AND p.post_status NOT IN ('trash', 'auto-draft') 
+				 LIMIT 3",
+				'%"id":' . (int) $att_id . '%',
+				'%"id":"' . (int) $att_id . '"%'
+			),
+			ARRAY_A
+		);
+		if ( ! empty( $elem_posts ) ) {
+			foreach ( $elem_posts as $row ) {
+				$refs[] = array(
+					'type'   => $row['post_type'],
+					'id'     => (int) $row['ID'],
+					'title'  => $row['post_title'] ?: '#' . $row['ID'],
+					'field'  => '_elementor_data',
+					'source' => 'Elementor Builder',
+					'method' => 'live_builder_check',
+				);
+			}
+			return $refs;
+		}
+
+		// Elementor filename match
+		foreach ( $clean_filenames as $fn ) {
+			if ( strlen( $fn ) < 4 ) {
+				continue;
+			}
+			$elem_fn_posts = $wpdb->get_results(
+				$wpdb->prepare(
+					"SELECT p.ID, p.post_title, p.post_type 
+					 FROM {$wpdb->postmeta} pm 
+					 INNER JOIN {$wpdb->posts} p ON p.ID = pm.post_id 
+					 WHERE pm.meta_key = '_elementor_data' 
+					 AND pm.meta_value LIKE %s 
+					 AND p.post_status NOT IN ('trash', 'auto-draft') 
+					 LIMIT 3",
+					'%' . $wpdb->esc_like( $fn ) . '%'
+				),
+				ARRAY_A
+			);
+			if ( ! empty( $elem_fn_posts ) ) {
+				foreach ( $elem_fn_posts as $row ) {
+					$refs[] = array(
+						'type'   => $row['post_type'],
+						'id'     => (int) $row['ID'],
+						'title'  => $row['post_title'] ?: '#' . $row['ID'],
+						'field'  => '_elementor_data',
+						'source' => 'Elementor Builder (Filename: ' . $fn . ')',
+						'method' => 'live_builder_check',
+					);
+				}
+				return $refs;
+			}
+		}
+
+		// 6. Custom Field PostMeta (ACF, Meta Box, Pods, WooCommerce meta)
+		// Exclude internal WordPress / plugin bookkeeping meta keys
+		$meta_refs = $wpdb->get_results(
+			$wpdb->prepare(
+				"SELECT p.ID, p.post_title, p.post_type, pm.meta_key 
+				 FROM {$wpdb->postmeta} pm 
+				 INNER JOIN {$wpdb->posts} p ON p.ID = pm.post_id 
+				 WHERE pm.meta_key NOT IN ('_wp_attached_file', '_wp_attachment_metadata', '_thumbnail_id', '_product_image_gallery', '_omninox_quarantined', '_omninox_protected', '_omninox_webp', '_edit_lock', '_edit_last') 
+				 AND (
+					pm.meta_value = %s 
+					OR pm.meta_value LIKE %s 
+					OR pm.meta_value LIKE %s
+				 ) 
+				 AND p.post_status NOT IN ('trash', 'auto-draft') 
+				 LIMIT 3",
+				(string) $att_id,
+				'%;s:' . strlen( (string) $att_id ) . ':"' . (string) $att_id . '";%',
+				'%' . $wpdb->esc_like( 'i:' . (int) $att_id . ';' ) . '%'
+			),
+			ARRAY_A
+		);
+		if ( ! empty( $meta_refs ) ) {
+			foreach ( $meta_refs as $row ) {
+				$refs[] = array(
+					'type'   => $row['post_type'],
+					'id'     => (int) $row['ID'],
+					'title'  => $row['post_title'] ?: '#' . $row['ID'],
+					'field'  => $row['meta_key'],
+					'source' => 'Custom Field (PostMeta)',
+					'method' => 'live_meta_check',
+				);
+			}
+			return $refs;
+		}
+
+		// 7. Term Meta (WooCommerce Category Thumbnail, Brand Logo, etc.)
+		$term_meta = $wpdb->get_results(
+			$wpdb->prepare(
+				"SELECT t.term_id, t.name, tm.meta_key 
+				 FROM {$wpdb->termmeta} tm 
+				 INNER JOIN {$wpdb->terms} t ON t.term_id = tm.term_id 
+				 WHERE tm.meta_value = %s 
+				 LIMIT 3",
+				(string) $att_id
+			),
+			ARRAY_A
+		);
+		if ( ! empty( $term_meta ) ) {
+			foreach ( $term_meta as $row ) {
+				$refs[] = array(
+					'type'   => 'term',
+					'id'     => (int) $row['term_id'],
+					'title'  => $row['name'] ?: '#' . $row['term_id'],
+					'field'  => $row['meta_key'],
+					'source' => 'Taxonomy / Term Meta',
+					'method' => 'live_term_check',
+				);
+			}
+			return $refs;
+		}
+
+		// 8. User Meta (Avatars, author profile photos)
+		$user_meta = $wpdb->get_results(
+			$wpdb->prepare(
+				"SELECT u.ID, u.user_login, um.meta_key 
+				 FROM {$wpdb->usermeta} um 
+				 INNER JOIN {$wpdb->users} u ON u.ID = um.user_id 
+				 WHERE um.meta_value = %s 
+				 LIMIT 3",
+				(string) $att_id
+			),
+			ARRAY_A
+		);
+		if ( ! empty( $user_meta ) ) {
+			foreach ( $user_meta as $row ) {
+				$refs[] = array(
+					'type'   => 'user',
+					'id'     => (int) $row['ID'],
+					'title'  => $row['user_login'] ?: '#' . $row['ID'],
+					'field'  => $row['meta_key'],
+					'source' => 'User Meta / Avatar',
+					'method' => 'live_user_check',
+				);
+			}
+			return $refs;
+		}
+
+		// 9. Active Parent Post Check
+		if ( $post && $post->post_parent > 0 ) {
+			$parent_post = $wpdb->get_row(
+				$wpdb->prepare(
+					"SELECT ID, post_title, post_type 
+					 FROM {$wpdb->posts} 
+					 WHERE ID = %d 
+					 AND post_status NOT IN ('trash', 'auto-draft') 
+					 LIMIT 1",
+					$post->post_parent
+				),
+				ARRAY_A
+			);
+			if ( ! empty( $parent_post ) ) {
+				$refs[] = array(
+					'type'   => $parent_post['post_type'],
+					'id'     => (int) $parent_post['ID'],
+					'title'  => $parent_post['post_title'] ?: '#' . $parent_post['ID'],
+					'field'  => 'post_parent',
+					'source' => 'Parent Post Attachment',
+					'method' => 'live_parent_check',
+				);
+				return $refs;
+			}
+		}
+
+		return $refs;
+	}
+
+	/**
 	 * Step scan: process next batch of attachments against the reference index.
 	 *
 	 * @param int $offset Attachment offset.
@@ -310,6 +632,18 @@ class UnusedDetector {
 			$file_rel = get_post_meta( $att_id, '_wp_attached_file', true );
 			$metadata = wp_get_attachment_metadata( $att_id );
 
+			// Resolve full physical path
+			$attached_full_path = function_exists( 'get_attached_file' ) ? get_attached_file( $att_id ) : '';
+			$resolved_path      = '';
+			if ( $attached_full_path && file_exists( $attached_full_path ) ) {
+				$resolved_path = $attached_full_path;
+			} elseif ( $file_rel ) {
+				$norm_rel = ltrim( str_replace( '\\', '/', $file_rel ), '/' );
+				if ( file_exists( $basedir . $norm_rel ) ) {
+					$resolved_path = $basedir . $norm_rel;
+				}
+			}
+
 			// Collect entire variant family
 			$family_filenames = array();
 			$family_urls      = array();
@@ -317,21 +651,27 @@ class UnusedDetector {
 
 			if ( $file_rel ) {
 				$family_filenames[] = wp_basename( $file_rel );
-				$family_urls[]      = $baseurl . $file_rel;
-				$f_size             = @filesize( $basedir . $file_rel );
-				if ( false !== $f_size ) {
-					$total_file_bytes += $f_size;
+				$norm_file_rel      = ltrim( str_replace( '\\', '/', $file_rel ), '/' );
+				$family_urls[]      = $baseurl . $norm_file_rel;
+
+				if ( $resolved_path ) {
+					$f_size = @filesize( $resolved_path );
+					if ( false !== $f_size && $f_size > 0 ) {
+						$total_file_bytes += $f_size;
+					}
 				}
 
-				$sub_dir = trailingslashit( dirname( $file_rel ) );
+				$dir_for_sizes = $resolved_path ? dirname( $resolved_path ) : ( $basedir . dirname( $norm_file_rel ) );
+				$sub_dir       = trailingslashit( dirname( $norm_file_rel ) );
+
 				if ( ! empty( $metadata['sizes'] ) && is_array( $metadata['sizes'] ) ) {
 					foreach ( $metadata['sizes'] as $s_info ) {
 						if ( ! empty( $s_info['file'] ) ) {
 							$family_filenames[] = $s_info['file'];
 							$family_urls[]      = $baseurl . $sub_dir . $s_info['file'];
-							$s_path             = $basedir . $sub_dir . $s_info['file'];
+							$s_path             = $dir_for_sizes . DIRECTORY_SEPARATOR . $s_info['file'];
 							$s_size             = @filesize( $s_path );
-							if ( false !== $s_size ) {
+							if ( false !== $s_size && $s_size > 0 ) {
 								$total_file_bytes += $s_size;
 							}
 						}
@@ -342,12 +682,17 @@ class UnusedDetector {
 				$webp_rec = (array) get_post_meta( $att_id, '_omninox_webp', true );
 				foreach ( (array) ( $webp_rec['files'] ?? array() ) as $w_file ) {
 					$family_filenames[] = wp_basename( $w_file );
-					$family_urls[]      = $baseurl . $w_file;
-					$w_size             = @filesize( $basedir . $w_file );
-					if ( false !== $w_size ) {
+					$norm_w_file        = ltrim( str_replace( '\\', '/', $w_file ), '/' );
+					$family_urls[]      = $baseurl . $norm_w_file;
+					$w_size             = @filesize( $basedir . $norm_w_file );
+					if ( false !== $w_size && $w_size > 0 ) {
 						$total_file_bytes += $w_size;
 					}
 				}
+			}
+
+			if ( 0 === $total_file_bytes && ! empty( $metadata['filesize'] ) ) {
+				$total_file_bytes = (int) $metadata['filesize'];
 			}
 
 			// Check quarantine state
@@ -366,23 +711,30 @@ class UnusedDetector {
 				$status = self::STATUS_PROTECTED;
 				$protection_reason = sprintf( __( 'Recently uploaded within protected %d-day window.', 'omninox-site-toolkit' ), $protect_days );
 			} else {
-				// Query reference index
+				// 1. Query pre-built reference index
 				$references = $index->get_references_for_attachment( $att_id, $family_filenames, $family_urls );
 
 				if ( ! empty( $references ) ) {
 					$status = self::STATUS_USED;
 				} else {
-					// If original file doesn't exist on disk, mark as unknown/broken
-					if ( ! $file_rel || false === @filesize( $basedir . $file_rel ) ) {
-						$status = self::STATUS_UNKNOWN;
-						$protection_reason = __( 'Physical file missing or unreadable.', 'omninox-site-toolkit' );
+					// 2. 100% Exhaustive Live Database Cross-Verification
+					$live_refs = self::live_cross_verify_attachment( $att_id, $family_filenames, $family_urls, $post );
+					if ( ! empty( $live_refs ) ) {
+						$references = $live_refs;
+						$status     = self::STATUS_USED;
 					} else {
-						$status = self::STATUS_UNUSED;
+						// 3. Physical file check
+						if ( ( ! $resolved_path && ! $file_rel ) || ( $resolved_path && false === @filesize( $resolved_path ) ) ) {
+							$status = self::STATUS_UNKNOWN;
+							$protection_reason = __( 'Physical file missing or unreadable.', 'omninox-site-toolkit' );
+						} else {
+							$status = self::STATUS_UNUSED;
+						}
 					}
 				}
 			}
 
-			$refs_list = isset( $references ) ? $references : $index->get_references_for_attachment( $att_id, $family_filenames, $family_urls );
+			$refs_list = ! empty( $references ) ? $references : array();
 
 			// Update stats
 			$snapshot['stats'][ $status ] = ( $snapshot['stats'][ $status ] ?? 0 ) + 1;
@@ -392,23 +744,27 @@ class UnusedDetector {
 
 			$thumb_url = wp_get_attachment_image_url( $att_id, 'thumbnail' );
 			if ( ! $thumb_url && $file_rel ) {
-				$thumb_url = $baseurl . $file_rel;
+				$thumb_url = $baseurl . ltrim( str_replace( '\\', '/', $file_rel ), '/' );
 			}
 
 			$snapshot['items'][ $att_id ] = array(
 				'id'                => $att_id,
 				'title'             => $post->post_title ? $post->post_title : wp_basename( $file_rel ?: '' ),
 				'filename'          => wp_basename( $file_rel ?: '' ),
-				'url'               => $file_rel ? ( $baseurl . $file_rel ) : '',
+				'url'               => $file_rel ? ( $baseurl . ltrim( str_replace( '\\', '/', $file_rel ), '/' ) ) : '',
 				'thumb_url'         => $thumb_url ?: '',
 				'file_size'         => $total_file_bytes,
 				'file_size_fmt'     => size_format( $total_file_bytes ),
+				'bytes'             => $total_file_bytes,
+				'formatted_size'    => size_format( $total_file_bytes ),
 				'uploaded'          => get_the_date( 'Y-m-d', $att_id ),
+				'date'              => get_the_date( 'Y-m-d', $att_id ),
 				'status'            => $status,
 				'is_quarantined'    => $is_quarantined,
 				'is_protected'      => $is_protected,
 				'protection_reason' => $protection_reason,
 				'reference_count'   => count( $refs_list ),
+				'references_count'  => count( $refs_list ),
 				'references'        => array_slice( $refs_list, 0, 10 ),
 			);
 
@@ -463,7 +819,10 @@ class UnusedDetector {
 		}
 
 		$items  = array_values( $snapshot['items'] );
-		$filter = sanitize_key( $params['filter'] ?? 'all' );
+		$filter = sanitize_key( $params['filter'] ?? 'likely_unused' );
+		if ( empty( $filter ) ) {
+			$filter = 'likely_unused';
+		}
 		$search = strtolower( trim( sanitize_text_field( $params['search'] ?? '' ) ) );
 
 		// Filter
@@ -508,15 +867,16 @@ class UnusedDetector {
 		$paged_items = array_slice( array_values( $items ), $offset, $per_page );
 
 		return array(
-			'has_scan'       => true,
-			'total'          => $total_filtered,
+			'has_scan'        => true,
+			'total'           => $total_filtered,
+			'total_items'     => $total_filtered,
 			'total_unfiltered'=> count( $snapshot['items'] ),
-			'page'           => $page,
-			'per_page'       => $per_page,
-			'total_pages'    => (int) ceil( $total_filtered / $per_page ),
-			'last_scanned'   => isset( $snapshot['last_updated'] ) ? date_i18n( 'Y-m-d H:i:s', $snapshot['last_updated'] ) : '',
-			'stats'          => $snapshot['stats'],
-			'items'          => $paged_items,
+			'page'            => $page,
+			'per_page'        => $per_page,
+			'total_pages'     => (int) ceil( $total_filtered / $per_page ),
+			'last_scanned'    => isset( $snapshot['last_updated'] ) ? date_i18n( 'Y-m-d H:i:s', $snapshot['last_updated'] ) : '',
+			'stats'           => $snapshot['stats'],
+			'items'           => $paged_items,
 		);
 	}
 

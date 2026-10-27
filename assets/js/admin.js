@@ -60,7 +60,7 @@
 			perPage: 100,
 			totalPages: 1,
 			totalItems: 0,
-			filter: 'all',
+			filter: 'likely_unused',
 			search: '',
 			selected: {},
 			selectAllEligible: false,
@@ -4066,22 +4066,54 @@
 
 		// 1. Stats Bar
 		var statsCards = el('div', { class: 'wpmt-unused-stats-grid' }, [
-			el('div', { class: 'wpmt-unused-stat-card' }, [
+			el('div', {
+				class: 'wpmt-unused-stat-card' + (state.unused.filter === 'all' ? ' is-active' : ''),
+				style: 'cursor:pointer;',
+				onClick: function () {
+					state.unused.filter = 'all';
+					state.unused.page = 1;
+					loadUnusedResults(1);
+				}
+			}, [
 				el('span', { class: 'wpmt-unused-stat-title', text: __('Scanned Images', 'omninox-site-toolkit') }),
 				el('span', { class: 'wpmt-unused-stat-value', text: String(stats.total || 0) }),
-				el('span', { class: 'wpmt-unused-stat-sub', text: __('Indexed attachments', 'omninox-site-toolkit') })
+				el('span', { class: 'wpmt-unused-stat-sub', text: __('Show all attachments', 'omninox-site-toolkit') })
 			]),
-			el('div', { class: 'wpmt-unused-stat-card stat-unused' }, [
+			el('div', {
+				class: 'wpmt-unused-stat-card stat-unused' + (state.unused.filter === 'likely_unused' ? ' is-active' : ''),
+				style: 'cursor:pointer;',
+				onClick: function () {
+					state.unused.filter = 'likely_unused';
+					state.unused.page = 1;
+					loadUnusedResults(1);
+				}
+			}, [
 				el('span', { class: 'wpmt-unused-stat-title', text: __('Likely Unused', 'omninox-site-toolkit') }),
 				el('span', { class: 'wpmt-unused-stat-value', text: String(stats.likely_unused || 0) }),
-				el('span', { class: 'wpmt-unused-stat-sub', text: __('No references detected', 'omninox-site-toolkit') })
+				el('span', { class: 'wpmt-unused-stat-sub', text: __('No references detected (Active)', 'omninox-site-toolkit') })
 			]),
-			el('div', { class: 'wpmt-unused-stat-card stat-used' }, [
+			el('div', {
+				class: 'wpmt-unused-stat-card stat-used' + (state.unused.filter === 'used' ? ' is-active' : ''),
+				style: 'cursor:pointer;',
+				onClick: function () {
+					state.unused.filter = 'used';
+					state.unused.page = 1;
+					loadUnusedResults(1);
+				}
+			}, [
 				el('span', { class: 'wpmt-unused-stat-title', text: __('Verified In Use', 'omninox-site-toolkit') }),
 				el('span', { class: 'wpmt-unused-stat-value', text: String(stats.used || 0) }),
 				el('span', { class: 'wpmt-unused-stat-sub', text: __('Content, theme or builder', 'omninox-site-toolkit') })
 			]),
-			el('div', { class: 'wpmt-unused-stat-card stat-protected' }, [
+			el('div', {
+				class: 'wpmt-unused-stat-card stat-protected' + (state.unused.filter === 'protected' ? ' is-active' : ''),
+				style: 'cursor:pointer;',
+				onClick: function () {
+					state.unused.filter = 'protected';
+					state.unused.page = 1;
+					loadUnusedResults(1);
+				}
+			}, [
 				el('span', { class: 'wpmt-unused-stat-title', text: __('Protected', 'omninox-site-toolkit') }),
 				el('span', { class: 'wpmt-unused-stat-value', text: String(stats.protected || 0) }),
 				el('span', { class: 'wpmt-unused-stat-sub', text: __('Site identity or recent uploads', 'omninox-site-toolkit') })
@@ -4116,13 +4148,13 @@
 					}
 				}, [document.createTextNode(__('Cancel', 'omninox-site-toolkit'))]) : null,
 				select([
-					['all', __('Filter: All Statuses', 'omninox-site-toolkit')],
 					['likely_unused', __('Filter: Likely Unused', 'omninox-site-toolkit')],
+					['all', __('Filter: All Statuses', 'omninox-site-toolkit')],
 					['used', __('Filter: Verified In Use', 'omninox-site-toolkit')],
 					['protected', __('Filter: Protected', 'omninox-site-toolkit')],
 					['unknown', __('Filter: Unknown / Review', 'omninox-site-toolkit')],
 					['quarantined', __('Filter: In Quarantine', 'omninox-site-toolkit')]
-				], state.unused.filter, function (val) {
+				], state.unused.filter || 'likely_unused', function (val) {
 					state.unused.filter = val;
 					state.unused.page = 1;
 					loadUnusedResults(1);
@@ -4314,8 +4346,8 @@
 							]),
 							el('small', { style: 'color:var(--wpmt-ink-muted);', text: 'ID: ' + item.id + (item.dimensions ? (' · ' + item.dimensions) : '') })
 						]),
-						el('td', { text: item.formatted_size || formatBytes(item.bytes || 0) }),
-						el('td', { text: item.date || '—' }),
+						el('td', { text: item.formatted_size || item.file_size_fmt || formatBytes(item.bytes || item.file_size || 0) }),
+						el('td', { text: item.date || item.uploaded || '—' }),
 						el('td', {}, [
 							el('span', {
 								class: 'wpmt-badge-status is-' + (item.status || 'unknown'),
@@ -4323,7 +4355,7 @@
 							})
 						]),
 						el('td', {}, [
-							(item.references_count > 0)
+							( (typeof item.references_count !== 'undefined' ? item.references_count : item.reference_count) > 0 )
 								? el('button', {
 									type: 'button',
 									class: 'wpmt-btn wpmt-btn-sm',
@@ -4332,7 +4364,10 @@
 										render();
 									}
 								}, [
-									document.createTextNode(item.references_count + ' ' + (item.references_count === 1 ? __('reference', 'omninox-site-toolkit') : __('references', 'omninox-site-toolkit')))
+									document.createTextNode(
+										(typeof item.references_count !== 'undefined' ? item.references_count : item.reference_count) + ' ' + 
+										((typeof item.references_count !== 'undefined' ? item.references_count : item.reference_count) === 1 ? __('reference', 'omninox-site-toolkit') : __('references', 'omninox-site-toolkit'))
+									)
 								])
 								: el('span', { style: 'color:var(--wpmt-ink-muted);font-size:12px;', text: __('None found', 'omninox-site-toolkit') })
 						]),
@@ -4961,6 +4996,7 @@
 				state.unused.scanning = false;
 				state.unused.scanProgress = 100;
 				state.unused.scanStep = __('Scan complete! Loading results…', 'omninox-site-toolkit');
+				state.unused.filter = 'likely_unused';
 				render();
 				toast(__('Unused media scan completed.', 'omninox-site-toolkit'));
 				loadUnusedResults(1);
@@ -4997,7 +5033,7 @@
 				params: {
 					page: state.unused.page,
 					per_page: state.unused.perPage,
-					filter: state.unused.filter,
+					filter: state.unused.filter || 'likely_unused',
 					search: state.unused.search
 				}
 			}
