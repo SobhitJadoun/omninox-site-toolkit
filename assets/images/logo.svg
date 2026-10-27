@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="omniBrandBg512" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0f8f8a"/>
+      <stop offset="100%" stop-color="#0a6f6b"/>
+    </linearGradient>
+    <linearGradient id="omniAccentGrad512" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#6ee7b7"/>
+      <stop offset="100%" stop-color="#34d399"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Clean Rounded Square Container -->
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="url(#omniBrandBg512)"/>
+  <rect x="22" y="22" width="468" height="468" rx="106" fill="none" stroke="#ffffff" stroke-width="6" stroke-opacity="0.12"/>
+
+  <!-- Outer Precision Shield Contour -->
+  <path d="M 256 96 
+           L 380 156 
+           L 380 292 
+           C 380 354, 326 402, 256 424 
+           C 186 402, 132 354, 132 292 
+           L 132 156 Z"
+        fill="none"
+        stroke="#ffffff"
+        stroke-width="20"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-opacity="0.3"/>
+
+  <!-- Interlocking Monogram Geometry -->
+  <!-- Left Vertical Pillar of N -->
+  <path d="M 194 196 L 194 316"
+        fill="none"
+        stroke="#ffffff"
+        stroke-width="28"
+        stroke-linecap="round"/>
+
+  <!-- Right Vertical Pillar of N -->
+  <path d="M 318 196 L 318 316"
+        fill="none"
+        stroke="#ffffff"
+        stroke-width="28"
+        stroke-linecap="round"/>
+
+  <!-- Dynamic Diagonal Strike (Speed & Precision) -->
+  <path d="M 194 204 L 312 308"
+        fill="none"
+        stroke="url(#omniAccentGrad512)"
+        stroke-width="30"
+        stroke-linecap="round"/>
+
+  <!-- Precision Top Right Node -->
+  <circle cx="318" cy="196" r="16" fill="url(#omniAccentGrad512)"/>
+</svg>

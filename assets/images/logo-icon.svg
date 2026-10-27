@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="omniBrandBg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0f8f8a"/>
+      <stop offset="100%" stop-color="#0a6f6b"/>
+    </linearGradient>
+    <linearGradient id="omniAccentGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#6ee7b7"/>
+      <stop offset="100%" stop-color="#34d399"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Base Rounded Container with Subtle Border -->
+  <rect width="128" height="128" rx="28" fill="url(#omniBrandBg)"/>
+  <rect x="2" y="2" width="124" height="124" rx="26" fill="none" stroke="#ffffff" stroke-width="1.5" stroke-opacity="0.15"/>
+
+  <!-- Geometric Shield & Interlocking Monogram (O + N) -->
+  <!-- Outer Shield Geometry -->
+  <path d="M 64 22 L 96 38 L 96 74 C 96 90, 82 102, 64 108 C 46 102, 32 90, 32 74 L 32 38 Z"
+        fill="none"
+        stroke="#ffffff"
+        stroke-width="5.5"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-opacity="0.35"/>
+
+  <!-- Main 'N' and 'O' Interlocking Core -->
+  <!-- Left Pillar of N -->
+  <path d="M 47 48 L 47 80"
+        fill="none"
+        stroke="#ffffff"
+        stroke-width="7.5"
+        stroke-linecap="round"/>
+
+  <!-- Right Pillar of N -->
+  <path d="M 81 48 L 81 80"
+        fill="none"
+        stroke="#ffffff"
+        stroke-width="7.5"
+        stroke-linecap="round"/>
+
+  <!-- Dynamic Precision Diagonal / Lightning Bolt Apex -->
+  <path d="M 47 50 L 79 78"
+        fill="none"
+        stroke="url(#omniAccentGrad)"
+        stroke-width="8"
+        stroke-linecap="round"/>
+
+  <!-- Top Right Precision Apex Pip -->
+  <circle cx="81" cy="48" r="4.5" fill="url(#omniAccentGrad)"/>
+</svg>
