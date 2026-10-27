@@ -57,7 +57,7 @@
 			stats: null,
 			items: [],
 			page: 1,
-			perPage: 20,
+			perPage: 100,
 			totalPages: 1,
 			totalItems: 0,
 			filter: 'all',
@@ -4227,6 +4227,50 @@
 						el('th', { style: 'width:190px;text-align:right;', text: __('Actions', 'omninox-site-toolkit') })
 					])
 				]),
+				(allVisibleSelected && (state.unused.totalItems || 0) > items.length) ? el('tbody', {}, [
+					el('tr', { style: 'background:rgba(45,212,191,0.08);text-align:center;' }, [
+						el('td', { colspan: 8, style: 'padding:10px 16px;font-size:12.5px;color:var(--wpmt-ink);border-bottom:1px solid var(--wpmt-border);' }, [
+							state.unused.selectAllEligible
+								? el('span', {}, [
+									document.createTextNode(sprintf(
+										/* translators: %d: count */
+										__('All %d images in current filter are selected. ', 'omninox-site-toolkit'),
+										state.unused.totalItems
+									)),
+									el('a', {
+										href: '#',
+										style: 'font-weight:600;margin-left:8px;text-decoration:underline;color:var(--wpmt-primary);cursor:pointer;',
+										onClick: function (e) {
+											e.preventDefault();
+											state.unused.selectAllEligible = false;
+											state.unused.selected = {};
+											render();
+										}
+									}, [document.createTextNode(__('Clear selection', 'omninox-site-toolkit'))])
+								])
+								: el('span', {}, [
+									document.createTextNode(sprintf(
+										/* translators: %d: count */
+										__('All %d images on this page are selected. ', 'omninox-site-toolkit'),
+										items.length
+									)),
+									el('a', {
+										href: '#',
+										style: 'font-weight:600;margin-left:8px;text-decoration:underline;color:var(--wpmt-primary);cursor:pointer;',
+										onClick: function (e) {
+											e.preventDefault();
+											state.unused.selectAllEligible = true;
+											selectAllMatchingFilter();
+										}
+									}, [document.createTextNode(sprintf(
+										/* translators: %d: count */
+										__('Select all %d images across all pages', 'omninox-site-toolkit'),
+										state.unused.totalItems
+									))])
+								])
+						])
+					])
+				]) : null,
 				el('tbody', {}, items.length ? items.map(function (item) {
 					var isChecked = !!state.unused.selected[item.id];
 					var isQuarantined = item.status === 'quarantined' || !!item.is_quarantined;
@@ -4345,16 +4389,37 @@
 				])
 			]),
 			// Pagination
-			el('div', { class: 'wpmt-table-helper-bar', style: 'padding:12px 16px;border-top:1px solid var(--wpmt-border);' }, [
-				el('small', {
-					text: sprintf(
-						/* translators: 1: current page, 2: total pages, 3: total items */
-						__('Showing page %1$d of %2$d (%3$d total items)', 'omninox-site-toolkit'),
-						state.unused.page || 1,
-						state.unused.totalPages || 1,
-						state.unused.totalItems || 0
-					)
-				}),
+			el('div', { class: 'wpmt-table-helper-bar', style: 'padding:12px 16px;border-top:1px solid var(--wpmt-border);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;' }, [
+				el('div', { style: 'display:flex;align-items:center;gap:16px;' }, [
+					el('small', {
+						text: sprintf(
+							/* translators: 1: current page, 2: total pages, 3: total items */
+							__('Showing page %1$d of %2$d (%3$d total items)', 'omninox-site-toolkit'),
+							state.unused.page || 1,
+							state.unused.totalPages || 1,
+							state.unused.totalItems || 0
+						)
+					}),
+					el('div', { style: 'display:inline-flex;align-items:center;gap:6px;' }, [
+						el('span', { style: 'font-size:12px;color:var(--wpmt-ink-muted);', text: __('Per page:', 'omninox-site-toolkit') }),
+						el('select', {
+							class: 'wpmt-select wpmt-select-sm',
+							style: 'padding:3px 8px;font-size:12px;border-radius:var(--wpmt-radius-xs);border:1px solid var(--wpmt-border);background:var(--wpmt-surface-2);color:var(--wpmt-ink);cursor:pointer;',
+							onChange: function (e) {
+								state.unused.perPage = parseInt(e.target.value, 10) || 100;
+								state.unused.selected = {};
+								state.unused.selectAllEligible = false;
+								loadUnusedResults(1);
+							}
+						}, [50, 100, 200, 500].map(function (n) {
+							return el('option', {
+								value: String(n),
+								selected: (state.unused.perPage || 100) === n,
+								text: String(n)
+							});
+						}))
+					])
+				]),
 				el('div', { class: 'wpmt-table-helper-buttons' }, [
 					el('button', {
 						type: 'button',
@@ -4951,6 +5016,35 @@
 			state.busy['unused_load'] = false;
 			render();
 			toast(err.message || __('Failed to load scan results.', 'omninox-site-toolkit'), true);
+		});
+	}
+
+	function selectAllMatchingFilter() {
+		state.busy['unused_load'] = true;
+		render();
+
+		api('/fix/media', {
+			method: 'POST',
+			body: {
+				action: 'unused_get_results',
+				params: {
+					page: 1,
+					per_page: 500,
+					filter: state.unused.filter,
+					search: state.unused.search
+				}
+			}
+		}).then(function (res) {
+			state.busy['unused_load'] = false;
+			if (res && res.items) {
+				res.items.forEach(function (it) {
+					state.unused.selected[it.id] = true;
+				});
+			}
+			render();
+		}).catch(function () {
+			state.busy['unused_load'] = false;
+			render();
 		});
 	}
 

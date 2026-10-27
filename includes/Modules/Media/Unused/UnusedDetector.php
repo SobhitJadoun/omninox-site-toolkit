@@ -502,7 +502,7 @@ class UnusedDetector {
 
 		$total_filtered = count( $items );
 		$page           = max( 1, absint( $params['page'] ?? 1 ) );
-		$per_page       = max( 10, min( 100, absint( $params['per_page'] ?? 20 ) ) );
+		$per_page       = max( 10, min( 500, absint( $params['per_page'] ?? 100 ) ) );
 		$offset         = ( $page - 1 ) * $per_page;
 
 		$paged_items = array_slice( array_values( $items ), $offset, $per_page );
@@ -527,6 +527,13 @@ class UnusedDetector {
 	 * @return array
 	 */
 	public static function bulk_quarantine( array $ids ): array {
+		if ( function_exists( 'wp_raise_memory_limit' ) ) {
+			wp_raise_memory_limit( 'admin' );
+		}
+		if ( function_exists( 'set_time_limit' ) ) {
+			@set_time_limit( 300 );
+		}
+
 		$results = array(
 			'success' => array(),
 			'failed'  => array(),
@@ -559,6 +566,13 @@ class UnusedDetector {
 	 * @return array
 	 */
 	public static function bulk_restore( array $ids ): array {
+		if ( function_exists( 'wp_raise_memory_limit' ) ) {
+			wp_raise_memory_limit( 'admin' );
+		}
+		if ( function_exists( 'set_time_limit' ) ) {
+			@set_time_limit( 300 );
+		}
+
 		$results = array(
 			'success' => array(),
 			'failed'  => array(),
@@ -590,6 +604,13 @@ class UnusedDetector {
 	 * @return array
 	 */
 	public static function bulk_delete( array $ids ): array {
+		if ( function_exists( 'wp_raise_memory_limit' ) ) {
+			wp_raise_memory_limit( 'admin' );
+		}
+		if ( function_exists( 'set_time_limit' ) ) {
+			@set_time_limit( 300 );
+		}
+
 		$results = array(
 			'success' => array(),
 			'failed'  => array(),
