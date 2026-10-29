@@ -51,9 +51,17 @@
 		mediaTab: 'unused',
 		unused: {
 			scanning: false,
+			paused: false,
 			cancelling: false,
 			scanProgress: 0,
 			scanStep: '',
+			scanPhase: 'discovery',
+			scanPhaseLabel: '',
+			imagesDiscovered: 0,
+			sourcesProcessed: 0,
+			sourcesTotal: 0,
+			referencesIndexed: 0,
+			currentOffset: 0,
 			stats: null,
 			items: [],
 			page: 1,
@@ -4128,25 +4136,28 @@
 
 		// 2. Toolbar
 		var isScanning = !!state.unused.scanning;
+		var isPaused = !!state.unused.paused;
 		var toolbar = el('div', { class: 'wpmt-unused-toolbar' }, [
 			el('div', { class: 'wpmt-unused-toolbar-group' }, [
 				el('button', {
 					type: 'button',
 					class: 'wpmt-btn wpmt-btn-primary',
 					disabled: isScanning,
-					onClick: function () { startUnusedScan(); }
+					onClick: function () { startUnusedScan('full'); }
 				}, [
 					icon('refresh', 14, 'wpmt-btn-icon'),
-					document.createTextNode(' ' + (isScanning ? __('Scanning…', 'omninox-site-toolkit') : __('Scan Website Images', 'omninox-site-toolkit')))
+					document.createTextNode(' ' + (isScanning ? (isPaused ? __('Scan Paused', 'omninox-site-toolkit') : __('Scanning…', 'omninox-site-toolkit')) : __('Scan Website Images', 'omninox-site-toolkit')))
 				]),
-				isScanning ? el('button', {
+				el('button', {
 					type: 'button',
-					class: 'wpmt-btn wpmt-btn-danger',
-					onClick: function () {
-						state.unused.cancelling = true;
-						toast(__('Cancelling scan…', 'omninox-site-toolkit'));
-					}
-				}, [document.createTextNode(__('Cancel', 'omninox-site-toolkit'))]) : null,
+					class: 'wpmt-btn',
+					disabled: isScanning,
+					title: __('Quick Scan only changed content and media since previous scan', 'omninox-site-toolkit'),
+					onClick: function () { startUnusedScan('quick'); }
+				}, [
+					icon('sparkle', 14, 'wpmt-btn-icon'),
+					document.createTextNode(' ' + __('Quick Scan', 'omninox-site-toolkit'))
+				]),
 				select([
 					['likely_unused', __('Filter: Likely Unused', 'omninox-site-toolkit')],
 					['all', __('Filter: All Statuses', 'omninox-site-toolkit')],
@@ -4213,17 +4224,68 @@
 		]);
 		wrapper.appendChild(toolbar);
 
-		// 3. Progress box if scanning
+		// 3. Phase 11 Progress Box with live metrics & controls
 		if (isScanning) {
-			var progressBox = el('div', { class: 'wpmt-unused-progress-box' }, [
-				el('div', { style: 'display:flex;justify-content:space-between;align-items:center;font-size:13px;' }, [
-					el('strong', { text: state.unused.scanStep || __('Scanning…', 'omninox-site-toolkit') }),
-					el('span', { text: (state.unused.scanProgress || 0) + '%' })
+			var progressBox = el('div', { class: 'wpmt-unused-progress-box', style: 'background:var(--wpmt-surface-2);border:1px solid var(--wpmt-border);border-radius:var(--wpmt-radius);padding:18px 20px;margin-bottom:16px;' }, [
+				el('div', { style: 'display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px;flex-wrap:wrap;gap:12px;' }, [
+					el('div', {}, [
+						el('div', { style: 'font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;color:var(--wpmt-primary);display:flex;align-items:center;gap:6px;' }, [
+							icon('media', 13),
+							document.createTextNode(__('Smart Media Scanner', 'omninox-site-toolkit') + (isPaused ? (' — ' + __('PAUSED', 'omninox-site-toolkit')) : ''))
+						]),
+						el('div', { style: 'font-size:15px;font-weight:700;color:var(--wpmt-ink);margin-top:3px;', text: state.unused.scanPhaseLabel || __('Scanning website references…', 'omninox-site-toolkit') })
+					]),
+					el('div', { style: 'display:flex;align-items:center;gap:8px;' }, [
+						isPaused ? el('button', {
+							type: 'button',
+							class: 'wpmt-btn wpmt-btn-sm wpmt-btn-primary',
+							onClick: function () { resumeUnusedScan(); }
+						}, [
+							icon('check', 12),
+							document.createTextNode(' ' + __('Resume', 'omninox-site-toolkit'))
+						]) : el('button', {
+							type: 'button',
+							class: 'wpmt-btn wpmt-btn-sm',
+							onClick: function () { pauseUnusedScan(); }
+						}, [
+							document.createTextNode(__('Pause', 'omninox-site-toolkit'))
+						]),
+						el('button', {
+							type: 'button',
+							class: 'wpmt-btn wpmt-btn-sm wpmt-btn-danger',
+							onClick: function () { cancelUnusedScan(); }
+						}, [
+							document.createTextNode(__('Cancel', 'omninox-site-toolkit'))
+						])
+					])
 				]),
-				el('div', { class: 'wpmt-unused-progress-bar-bg' }, [
-					el('div', { class: 'wpmt-unused-progress-bar-fill', style: 'width:' + (state.unused.scanProgress || 0) + '%' })
+				// Metric Row
+				el('div', { style: 'display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:14px;background:var(--wpmt-surface);padding:12px 14px;border-radius:var(--wpmt-radius-xs);border:1px solid var(--wpmt-border);font-size:12px;' }, [
+					el('div', {}, [
+						el('span', { style: 'color:var(--wpmt-ink-muted);display:block;font-size:11px;', text: __('Images Discovered', 'omninox-site-toolkit') }),
+						el('strong', { style: 'font-size:14px;color:var(--wpmt-ink);', text: (state.unused.imagesDiscovered || 0).toLocaleString() })
+					]),
+					el('div', {}, [
+						el('span', { style: 'color:var(--wpmt-ink-muted);display:block;font-size:11px;', text: __('Sources Processed', 'omninox-site-toolkit') }),
+						el('strong', { style: 'font-size:14px;color:var(--wpmt-ink);', text: (state.unused.sourcesProcessed || 0).toLocaleString() + ' / ' + (state.unused.sourcesTotal || 1).toLocaleString() })
+					]),
+					el('div', {}, [
+						el('span', { style: 'color:var(--wpmt-ink-muted);display:block;font-size:11px;', text: __('References Indexed', 'omninox-site-toolkit') }),
+						el('strong', { style: 'font-size:14px;color:var(--wpmt-primary);', text: (state.unused.referencesIndexed || 0).toLocaleString() })
+					]),
+					el('div', {}, [
+						el('span', { style: 'color:var(--wpmt-ink-muted);display:block;font-size:11px;', text: __('Progress', 'omninox-site-toolkit') }),
+						el('strong', { style: 'font-size:14px;color:var(--wpmt-ink);', text: (state.unused.scanProgress || 0) + '%' })
+					])
 				]),
-				el('small', { style: 'color:var(--wpmt-ink-muted);', text: __('Scanning is non-blocking and safe. It builds an AST index of Gutenberg, Elementor, Divi, Theme, and custom field references.', 'omninox-site-toolkit') })
+				// Progress bar fill
+				el('div', { class: 'wpmt-unused-progress-bar-bg', style: 'height:8px;border-radius:4px;background:var(--wpmt-border);overflow:hidden;position:relative;' }, [
+					el('div', { class: 'wpmt-unused-progress-bar-fill', style: 'height:100%;background:var(--wpmt-primary);transition:width 0.3s ease;width:' + (state.unused.scanProgress || 0) + '%' })
+				]),
+				el('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-top:8px;font-size:11.5px;color:var(--wpmt-ink-muted);' }, [
+					el('span', { text: state.unused.scanStep || __('Processing high-speed database index…', 'omninox-site-toolkit') }),
+					el('span', { text: __('Safe & Non-blocking', 'omninox-site-toolkit') })
+				])
 			]);
 			wrapper.appendChild(progressBox);
 		}
@@ -4943,26 +5005,40 @@
 		}
 	}
 
-	function startUnusedScan() {
+	function startUnusedScan(mode) {
+		mode = mode || 'full';
 		state.unused.scanning = true;
+		state.unused.paused = false;
 		state.unused.cancelling = false;
-		state.unused.scanProgress = 8;
-		state.unused.scanStep = __('Building AST reference index across content, theme, and builders…', 'omninox-site-toolkit');
+		state.unused.scanProgress = 2;
+		state.unused.scanPhase = 'discovery';
+		state.unused.scanPhaseLabel = __('Stage 1: Discovering Attachments & Content Sources…', 'omninox-site-toolkit');
+		state.unused.scanStep = __('Initializing indexed database tables and source counters…', 'omninox-site-toolkit');
+		state.unused.imagesDiscovered = 0;
+		state.unused.sourcesProcessed = 0;
+		state.unused.sourcesTotal = 0;
+		state.unused.referencesIndexed = 0;
+		state.unused.currentOffset = 0;
 		render();
 
 		api('/fix/media', {
 			method: 'POST',
-			body: { action: 'unused_scan_start' }
+			body: { action: 'unused_scan_start', params: { mode: mode } }
 		}).then(function (res) {
 			if (state.unused.cancelling) {
-				state.unused.scanning = false;
-				render();
+				cancelUnusedScan();
 				return;
 			}
-			state.unused.scanProgress = 15;
-			state.unused.scanStep = res.message || sprintf(__('Reference index ready. Scanning %d images…', 'omninox-site-toolkit'), res.total || 0);
+			state.unused.scanPhase = res.phase || 'indexing_meta';
+			state.unused.scanPhaseLabel = res.phase_label || __('Stage 2: Indexing Media References…', 'omninox-site-toolkit');
+			state.unused.scanProgress = res.progress || 5;
+			state.unused.imagesDiscovered = res.images_discovered || 0;
+			state.unused.sourcesProcessed = res.sources_processed || 0;
+			state.unused.sourcesTotal = res.sources_total || 0;
+			state.unused.referencesIndexed = res.references_indexed || 0;
+			state.unused.scanStep = res.message || __('Indexing postmeta and featured image references…', 'omninox-site-toolkit');
 			render();
-			stepUnusedScan(0, res.total || 0);
+			stepUnusedScan(0, res.images_discovered || 0);
 		}).catch(function (err) {
 			state.unused.scanning = false;
 			render();
@@ -4972,53 +5048,92 @@
 
 	function stepUnusedScan(offset, total) {
 		if (state.unused.cancelling) {
-			state.unused.scanning = false;
-			state.unused.cancelling = false;
-			render();
-			toast(__('Scan cancelled.', 'omninox-site-toolkit'));
+			cancelUnusedScan();
 			return;
 		}
 
+		if (state.unused.paused) {
+			return;
+		}
+
+		state.unused.currentOffset = offset;
 		var batch = 100;
+
 		api('/fix/media', {
 			method: 'POST',
 			body: { action: 'unused_scan_step', params: { offset: offset, batch: batch } }
 		}).then(function (res) {
 			if (state.unused.cancelling) {
-				state.unused.scanning = false;
-				state.unused.cancelling = false;
-				render();
-				toast(__('Scan cancelled.', 'omninox-site-toolkit'));
+				cancelUnusedScan();
 				return;
 			}
 
+			if (state.unused.paused) {
+				return;
+			}
+
+			state.unused.scanPhase = res.phase || state.unused.scanPhase;
+			state.unused.scanPhaseLabel = res.phase_label || state.unused.scanPhaseLabel;
+			state.unused.scanProgress = res.progress || state.unused.scanProgress;
+			state.unused.imagesDiscovered = res.images_discovered || state.unused.imagesDiscovered;
+			state.unused.sourcesProcessed = res.sources_processed || state.unused.sourcesProcessed;
+			state.unused.sourcesTotal = res.sources_total || state.unused.sourcesTotal;
+			state.unused.referencesIndexed = res.references_indexed || state.unused.referencesIndexed;
+			state.unused.scanStep = res.message || state.unused.scanStep;
+
 			if (res.done === true || res.status === 'complete') {
 				state.unused.scanning = false;
+				state.unused.paused = false;
 				state.unused.scanProgress = 100;
-				state.unused.scanStep = __('Scan complete! Loading results…', 'omninox-site-toolkit');
 				state.unused.filter = 'likely_unused';
 				render();
 				toast(__('Unused media scan completed.', 'omninox-site-toolkit'));
 				loadUnusedResults(1);
 			} else {
-				var nextOffset = res.offset || (offset + batch);
-				var totalImages = res.total || total || 1;
-				var pct = Math.min(99, Math.max(15, Math.round((nextOffset / totalImages) * 100)));
-				state.unused.scanProgress = pct;
-				state.unused.scanStep = sprintf(
-					/* translators: 1: current offset, 2: total images, 3: percentage */
-					__('Analyzing image references: %1$d of %2$d processed (%3$d%%)…', 'omninox-site-toolkit'),
-					Math.min(nextOffset, totalImages),
-					totalImages,
-					pct
-				);
 				render();
-				stepUnusedScan(nextOffset, totalImages);
+				stepUnusedScan(res.offset || 0, res.total || total);
 			}
 		}).catch(function (err) {
 			state.unused.scanning = false;
+			state.unused.paused = false;
 			render();
 			toast(err.message || __('Scan interrupted.', 'omninox-site-toolkit'), true);
+		});
+	}
+
+	function pauseUnusedScan() {
+		state.unused.paused = true;
+		render();
+		api('/fix/media', {
+			method: 'POST',
+			body: { action: 'unused_scan_pause' }
+		}).then(function () {
+			toast(__('Scan paused.', 'omninox-site-toolkit'));
+		});
+	}
+
+	function resumeUnusedScan() {
+		state.unused.paused = false;
+		render();
+		api('/fix/media', {
+			method: 'POST',
+			body: { action: 'unused_scan_resume' }
+		}).then(function () {
+			toast(__('Resuming scan…', 'omninox-site-toolkit'));
+			stepUnusedScan(state.unused.currentOffset || 0, state.unused.imagesDiscovered || 0);
+		});
+	}
+
+	function cancelUnusedScan() {
+		state.unused.scanning = false;
+		state.unused.paused = false;
+		state.unused.cancelling = false;
+		render();
+		api('/fix/media', {
+			method: 'POST',
+			body: { action: 'unused_scan_cancel' }
+		}).then(function () {
+			toast(__('Scan cancelled.', 'omninox-site-toolkit'));
 		});
 	}
 

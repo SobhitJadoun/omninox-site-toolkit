@@ -640,6 +640,15 @@ class MediaModule extends AbstractModule {
 					absint( $params['batch'] ?? 30 )
 				);
 
+			case 'unused_scan_pause':
+				return \OmninoxSiteToolkit\Modules\Media\Unused\UnusedDetector::pause_scan();
+
+			case 'unused_scan_resume':
+				return \OmninoxSiteToolkit\Modules\Media\Unused\UnusedDetector::resume_scan();
+
+			case 'unused_scan_cancel':
+				return \OmninoxSiteToolkit\Modules\Media\Unused\UnusedDetector::cancel_scan();
+
 			case 'unused_get_results':
 				return \OmninoxSiteToolkit\Modules\Media\Unused\UnusedDetector::get_results( $params );
 
