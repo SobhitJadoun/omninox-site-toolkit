@@ -84,6 +84,22 @@
 				protect_site_identity: 1,
 				protect_woo_catalog: 1
 			}
+		},
+		urlReplacement: {
+			active: false,
+			jobId: null,
+			mode: 'replace',
+			format: 'webp',
+			status: 'idle',
+			step: 'init',
+			stepLabel: '',
+			progress: 0,
+			rowsInspected: 0,
+			rowsReplaced: 0,
+			replacementsCount: 0,
+			summary: null,
+			report: null,
+			showReport: false
 		}
 	};
 
@@ -1134,6 +1150,9 @@
 			if (usageCard) {
 				wrapper.appendChild(usageCard);
 			}
+
+			// High-Performance Image URL Replacement Engine
+			renderUrlReplacementCard(wrapper);
 		}
 
 		if (module.actions && module.actions.length) {
@@ -5329,6 +5348,406 @@
 			state.unused.history = Array.isArray(res) ? res : [];
 			render();
 		});
+	}
+
+	/* ---------------------------------- High-Performance URL Replacement Engine */
+
+	function loadUrlReplacementSummary() {
+		var fmt = state.urlReplacement.format || 'webp';
+		api('/fix/media', {
+			method: 'POST',
+			body: { action: 'url_replacement_summary', params: { format: fmt } }
+		}).then(function (res) {
+			if (res) {
+				state.urlReplacement.summary = res;
+				render();
+			}
+		});
+	}
+
+	function startUrlReplacement(mode) {
+		mode = mode || 'replace';
+		var fmt = state.urlReplacement.format || 'webp';
+
+		if (mode === 'replace' && !window.confirm(__('This will rewrite image URLs across posts, builders, options, and taxonomies to point to WebP/AVIF files and move originals into a 30-day holding area. A reversible rollback journal will be saved. Continue?', 'omninox-site-toolkit'))) {
+			return;
+		}
+
+		state.urlReplacement.active = true;
+		state.urlReplacement.mode = mode;
+		state.urlReplacement.status = 'running';
+		state.urlReplacement.progress = 5;
+		state.urlReplacement.step = 'init';
+		state.urlReplacement.stepLabel = (mode === 'preview') ? __('Starting Dry-Run Preview…', 'omninox-site-toolkit') : __('Initializing URL Replacement Engine…', 'omninox-site-toolkit');
+		state.urlReplacement.rowsInspected = 0;
+		state.urlReplacement.rowsReplaced = 0;
+		state.urlReplacement.replacementsCount = 0;
+		render();
+
+		api('/fix/media', {
+			method: 'POST',
+			body: { action: 'url_replacement_start', params: { mode: mode, format: fmt } }
+		}).then(function (res) {
+			if (res && res.job_id) {
+				state.urlReplacement.jobId = res.job_id;
+				state.urlReplacement.step = res.current_step;
+				state.urlReplacement.stepLabel = res.step_label;
+				state.urlReplacement.progress = res.progress || 10;
+				render();
+				stepUrlReplacement();
+			} else {
+				state.urlReplacement.active = false;
+				render();
+				toast(__('Failed to start URL replacement.', 'omninox-site-toolkit'), true);
+			}
+		}).catch(function (err) {
+			state.urlReplacement.active = false;
+			render();
+			toast(err.message || __('Error starting URL replacement.', 'omninox-site-toolkit'), true);
+		});
+	}
+
+	function stepUrlReplacement() {
+		if (!state.urlReplacement.active || !state.urlReplacement.jobId) {
+			return;
+		}
+
+		if (state.urlReplacement.status === 'paused') {
+			return;
+		}
+
+		api('/fix/media', {
+			method: 'POST',
+			body: {
+				action: 'url_replacement_step',
+				params: { job_id: state.urlReplacement.jobId, batch: 100 }
+			}
+		}).then(function (res) {
+			if (!state.urlReplacement.active) {
+				return;
+			}
+
+			if (res.status === 'paused') {
+				state.urlReplacement.status = 'paused';
+				render();
+				return;
+			}
+
+			state.urlReplacement.step = res.current_step;
+			state.urlReplacement.stepLabel = res.step_label;
+			state.urlReplacement.progress = res.progress || 10;
+			state.urlReplacement.rowsInspected = res.rows_inspected || 0;
+			state.urlReplacement.rowsReplaced = res.rows_replaced || 0;
+			state.urlReplacement.replacementsCount = res.replacements_count || 0;
+
+			if (res.done || res.status === 'complete') {
+				state.urlReplacement.active = false;
+				state.urlReplacement.status = 'complete';
+				state.urlReplacement.progress = 100;
+				state.urlReplacement.report = res;
+				state.urlReplacement.showReport = true;
+				render();
+				toast(res.message || __('URL replacement completed successfully.', 'omninox-site-toolkit'));
+				loadUrlReplacementSummary();
+			} else {
+				render();
+				setTimeout(stepUrlReplacement, 60);
+			}
+		}).catch(function (err) {
+			state.urlReplacement.active = false;
+			render();
+			toast(err.message || __('URL replacement step interrupted.', 'omninox-site-toolkit'), true);
+		});
+	}
+
+	function pauseUrlReplacement() {
+		if (!state.urlReplacement.jobId) return;
+		state.urlReplacement.status = 'paused';
+		render();
+		api('/fix/media', {
+			method: 'POST',
+			body: { action: 'url_replacement_pause', params: { job_id: state.urlReplacement.jobId } }
+		}).then(function () {
+			toast(__('Replacement paused.', 'omninox-site-toolkit'));
+		});
+	}
+
+	function resumeUrlReplacement() {
+		if (!state.urlReplacement.jobId) return;
+		state.urlReplacement.status = 'running';
+		render();
+		api('/fix/media', {
+			method: 'POST',
+			body: { action: 'url_replacement_resume', params: { job_id: state.urlReplacement.jobId } }
+		}).then(function () {
+			toast(__('Resuming replacement…', 'omninox-site-toolkit'));
+			stepUrlReplacement();
+		});
+	}
+
+	function cancelUrlReplacement() {
+		if (!state.urlReplacement.jobId) return;
+		var jid = state.urlReplacement.jobId;
+		state.urlReplacement.active = false;
+		state.urlReplacement.status = 'cancelled';
+		render();
+		api('/fix/media', {
+			method: 'POST',
+			body: { action: 'url_replacement_cancel', params: { job_id: jid } }
+		}).then(function () {
+			toast(__('Replacement cancelled.', 'omninox-site-toolkit'));
+		});
+	}
+
+	function rollbackUrlReplacement() {
+		if (!state.urlReplacement.jobId) {
+			toast(__('No previous replacement job ID recorded in session.', 'omninox-site-toolkit'), true);
+			return;
+		}
+
+		if (!window.confirm(__('Revert all database records and restore original files for the last replacement job? This action reads from the secure rollback journal.', 'omninox-site-toolkit'))) {
+			return;
+		}
+
+		state.busy['url_rollback'] = true;
+		render();
+
+		api('/fix/media', {
+			method: 'POST',
+			body: { action: 'url_replacement_rollback', params: { job_id: state.urlReplacement.jobId } }
+		}).then(function (res) {
+			state.busy['url_rollback'] = false;
+			state.urlReplacement.status = 'rolled_back';
+			state.urlReplacement.jobId = null;
+			render();
+			toast(res.message || __('Rollback completed successfully.', 'omninox-site-toolkit'));
+			loadUrlReplacementSummary();
+		}).catch(function (err) {
+			state.busy['url_rollback'] = false;
+			render();
+			toast(err.message || __('Rollback failed.', 'omninox-site-toolkit'), true);
+		});
+	}
+
+	function exportUrlReplacementCsv() {
+		var fmt = state.urlReplacement.format || 'webp';
+		api('/fix/media', {
+			method: 'POST',
+			body: { action: 'url_replacement_export_csv', params: { format: fmt } }
+		}).then(function (res) {
+			if (res && res.csv_data) {
+				var blob = new Blob([res.csv_data], { type: 'text/csv;charset=utf-8;' });
+				var link = document.createElement('a');
+				link.href = URL.createObjectURL(blob);
+				link.download = res.filename || 'image-url-replacement-map.csv';
+				document.body.appendChild(link);
+				link.click();
+				document.body.removeChild(link);
+				toast(__('CSV replacement map downloaded successfully.', 'omninox-site-toolkit'));
+			} else {
+				toast(__('No verified conversion mappings found to export.', 'omninox-site-toolkit'), true);
+			}
+		});
+	}
+
+	function renderUrlReplacementCard(wrapper) {
+		if (!state.urlReplacement.summary && !state.busy['url_summary_load']) {
+			state.busy['url_summary_load'] = true;
+			loadUrlReplacementSummary();
+		}
+
+		var summary = state.urlReplacement.summary || {
+			total_mappings: 0,
+			distinct_attachments: 0,
+			missing_files: 0,
+			format: 'webp'
+		};
+
+		var isRunning = state.urlReplacement.active;
+		var isPaused  = (state.urlReplacement.status === 'paused');
+		var isPreview = (state.urlReplacement.mode === 'preview');
+
+		var card = el('div', { class: 'wpmt-card wpmt-url-engine-card', style: 'margin-bottom:20px;' }, [
+			// Header
+			el('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:12px;' }, [
+				el('div', {}, [
+					el('div', { style: 'font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;color:var(--wpmt-primary);display:flex;align-items:center;gap:6px;' }, [
+						icon('performance', 14),
+						document.createTextNode(__('URL Replacement Engine', 'omninox-site-toolkit'))
+					]),
+					el('h3', { style: 'margin:4px 0 0;font-size:16px;font-weight:700;color:var(--wpmt-ink);', text: __('High-Performance Database Image URL Rewriter', 'omninox-site-toolkit') })
+				]),
+				el('div', { style: 'display:flex;align-items:center;gap:10px;' }, [
+					el('span', {
+						class: 'wpmt-badge-status is-' + (isRunning ? 'used' : (state.urlReplacement.status === 'complete' ? 'pass' : 'notice')),
+						text: isRunning ? (isPaused ? __('PAUSED', 'omninox-site-toolkit') : (isPreview ? __('PREVIEWING', 'omninox-site-toolkit') : __('REPLACING', 'omninox-site-toolkit'))) : strtoupper(state.urlReplacement.status || 'idle')
+					})
+				])
+			]),
+
+			// Stats grid
+			el('div', { style: 'display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:16px;' }, [
+				el('div', { class: 'wpmt-unused-stat-card' }, [
+					el('span', { class: 'wpmt-unused-stat-title', text: __('Verified URL Mappings', 'omninox-site-toolkit') }),
+					el('span', { class: 'wpmt-unused-stat-value', text: String(summary.total_mappings || 0) }),
+					el('span', { class: 'wpmt-unused-stat-sub', text: __('All registered thumbnail sizes', 'omninox-site-toolkit') })
+				]),
+				el('div', { class: 'wpmt-unused-stat-card' }, [
+					el('span', { class: 'wpmt-unused-stat-title', text: __('Converted Attachments', 'omninox-site-toolkit') }),
+					el('span', { class: 'wpmt-unused-stat-value', text: String(summary.distinct_attachments || 0) }),
+					el('span', { class: 'wpmt-unused-stat-sub', text: __('Ready for replacement', 'omninox-site-toolkit') })
+				]),
+				el('div', { class: 'wpmt-unused-stat-card' }, [
+					el('span', { class: 'wpmt-unused-stat-title', text: __('Records Replaced', 'omninox-site-toolkit') }),
+					el('span', { class: 'wpmt-unused-stat-value', text: String(state.urlReplacement.rowsReplaced || 0) }),
+					el('span', { class: 'wpmt-unused-stat-sub', text: __('Database rows updated', 'omninox-site-toolkit') })
+				]),
+				el('div', { class: 'wpmt-unused-stat-card' }, [
+					el('span', { class: 'wpmt-unused-stat-title', text: __('Rollback Journal', 'omninox-site-toolkit') }),
+					el('span', { class: 'wpmt-unused-stat-value', text: state.urlReplacement.jobId ? __('Protected', 'omninox-site-toolkit') : __('Idle', 'omninox-site-toolkit') }),
+					el('span', { class: 'wpmt-unused-stat-sub', text: __('Reversible backup active', 'omninox-site-toolkit') })
+				])
+			]),
+
+			// Progress Box if active
+			isRunning ? el('div', { class: 'wpmt-unused-progress-box', style: 'background:var(--wpmt-surface-2);border:1px solid var(--wpmt-border);border-radius:var(--wpmt-radius);padding:16px 18px;margin-bottom:16px;' }, [
+				el('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;' }, [
+					el('strong', { text: state.urlReplacement.stepLabel || __('Processing database records…', 'omninox-site-toolkit') }),
+					el('div', { style: 'display:flex;align-items:center;gap:8px;' }, [
+						isPaused ? el('button', {
+							type: 'button',
+							class: 'wpmt-btn wpmt-btn-sm wpmt-btn-primary',
+							onClick: function () { resumeUrlReplacement(); }
+						}, [document.createTextNode(__('Resume', 'omninox-site-toolkit'))]) : el('button', {
+							type: 'button',
+							class: 'wpmt-btn wpmt-btn-sm',
+							onClick: function () { pauseUrlReplacement(); }
+						}, [document.createTextNode(__('Pause', 'omninox-site-toolkit'))]),
+						el('button', {
+							type: 'button',
+							class: 'wpmt-btn wpmt-btn-sm wpmt-btn-danger',
+							onClick: function () { cancelUrlReplacement(); }
+						}, [document.createTextNode(__('Cancel', 'omninox-site-toolkit'))])
+					])
+				]),
+				el('div', { class: 'wpmt-unused-progress-bar-bg', style: 'height:8px;border-radius:4px;background:var(--wpmt-border);overflow:hidden;' }, [
+					el('div', { class: 'wpmt-unused-progress-bar-fill', style: 'height:100%;background:var(--wpmt-primary);transition:width 0.3s ease;width:' + (state.urlReplacement.progress || 0) + '%' })
+				]),
+				el('div', { style: 'display:flex;justify-content:space-between;margin-top:8px;font-size:12px;color:var(--wpmt-ink-muted);' }, [
+					el('span', { text: sprintf(__('Scanned: %d rows | Modified: %d rows (%d URL instances)', 'omninox-site-toolkit'), state.urlReplacement.rowsInspected || 0, state.urlReplacement.rowsReplaced || 0, state.urlReplacement.replacementsCount || 0) }),
+					el('span', { text: (state.urlReplacement.progress || 0) + '%' })
+				])
+			]) : null,
+
+			// Controls Toolbar
+			el('div', { style: 'display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;padding-top:12px;border-top:1px solid var(--wpmt-border);' }, [
+				el('div', { style: 'display:flex;align-items:center;gap:8px;' }, [
+					el('button', {
+						type: 'button',
+						class: 'wpmt-btn',
+						disabled: isRunning,
+						title: __('Dry-run preview without modifying database', 'omninox-site-toolkit'),
+						onClick: function () { startUrlReplacement('preview'); }
+					}, [
+						icon('search', 14, 'wpmt-btn-icon'),
+						document.createTextNode(' ' + __('Preview Changes', 'omninox-site-toolkit'))
+					]),
+					el('button', {
+						type: 'button',
+						class: 'wpmt-btn wpmt-btn-primary',
+						disabled: isRunning,
+						title: __('Replace original URLs with converted files across the entire site', 'omninox-site-toolkit'),
+						onClick: function () { startUrlReplacement('replace'); }
+					}, [
+						icon('sparkle', 14, 'wpmt-btn-icon'),
+						document.createTextNode(' ' + __('Start Replacement', 'omninox-site-toolkit'))
+					]),
+					state.urlReplacement.jobId ? el('button', {
+						type: 'button',
+						class: 'wpmt-btn wpmt-btn-danger',
+						disabled: isRunning || state.busy['url_rollback'],
+						title: __('Roll back all database modifications from the last job', 'omninox-site-toolkit'),
+						onClick: function () { rollbackUrlReplacement(); }
+					}, [
+						icon('backup', 14, 'wpmt-btn-icon'),
+						document.createTextNode(' ' + (state.busy['url_rollback'] ? __('Rolling back…', 'omninox-site-toolkit') : __('Roll Back', 'omninox-site-toolkit')))
+					]) : null
+				]),
+				el('div', { style: 'display:flex;align-items:center;gap:8px;' }, [
+					el('button', {
+						type: 'button',
+						class: 'wpmt-btn',
+						title: __('Download exact URL replacement CSV mapping', 'omninox-site-toolkit'),
+						onClick: function () { exportUrlReplacementCsv(); }
+					}, [
+						icon('download', 14, 'wpmt-btn-icon'),
+						document.createTextNode(' ' + __('Export CSV Map', 'omninox-site-toolkit'))
+					]),
+					state.urlReplacement.report ? el('button', {
+						type: 'button',
+						class: 'wpmt-btn',
+						onClick: function () {
+							state.urlReplacement.showReport = true;
+							render();
+						}
+					}, [document.createTextNode(__('View Report', 'omninox-site-toolkit'))]) : null
+				])
+			])
+		]);
+
+		wrapper.appendChild(card);
+
+		// Report Modal if requested
+		if (state.urlReplacement.showReport && state.urlReplacement.report) {
+			var rep = state.urlReplacement.report;
+			var repModal = el('div', {
+				class: 'wpmt-lightbox-modal',
+				onClick: function (e) {
+					if (e.target === repModal) {
+						state.urlReplacement.showReport = false;
+						render();
+					}
+				}
+			}, [
+				el('div', { class: 'wpmt-lightbox-card', style: 'max-width:540px;' }, [
+					el('div', { style: 'padding:16px 20px;border-bottom:1px solid var(--wpmt-border);display:flex;justify-content:space-between;align-items:center;' }, [
+						el('strong', { text: __('URL Replacement Execution Report', 'omninox-site-toolkit') }),
+						el('button', {
+							type: 'button',
+							class: 'wpmt-btn wpmt-btn-sm',
+							onClick: function () {
+								state.urlReplacement.showReport = false;
+								render();
+							}
+						}, [document.createTextNode('✕')])
+					]),
+					el('div', { style: 'padding:20px;font-size:13px;line-height:1.6;' }, [
+						el('p', { style: 'margin:0 0 12px;font-weight:600;color:var(--wpmt-ink);', text: rep.message || __('Execution complete.', 'omninox-site-toolkit') }),
+						el('table', { class: 'wpmt-table', style: 'width:100%;margin-bottom:14px;' }, [
+							el('tbody', {}, [
+								el('tr', {}, [el('td', { text: __('Execution Mode', 'omninox-site-toolkit') }), el('td', { style: 'font-weight:600;', text: strtoupper(rep.mode || 'replace') })]),
+								el('tr', {}, [el('td', { text: __('Total Rows Scanned', 'omninox-site-toolkit') }), el('td', { style: 'font-weight:600;', text: String(rep.rows_inspected || 0) })]),
+								el('tr', {}, [el('td', { text: __('Database Rows Updated', 'omninox-site-toolkit') }), el('td', { style: 'font-weight:600;color:var(--wpmt-primary);', text: String(rep.rows_replaced || 0) })]),
+								el('tr', {}, [el('td', { text: __('URL Occurrences Replaced', 'omninox-site-toolkit') }), el('td', { style: 'font-weight:600;', text: String(rep.replacements_count || 0) })]),
+								el('tr', {}, [el('td', { text: __('Job Tracking ID', 'omninox-site-toolkit') }), el('td', { style: 'font-family:monospace;font-size:11px;', text: rep.job_id || '—' })])
+							])
+						]),
+						el('small', { style: 'color:var(--wpmt-ink-muted);', text: __('Original files are preserved in uploads/omninox-media-backup/ for 30 days. You can roll back modifications at any time.', 'omninox-site-toolkit') })
+					]),
+					el('div', { style: 'padding:14px 20px;border-top:1px solid var(--wpmt-border);display:flex;justify-content:flex-end;' }, [
+						el('button', {
+							type: 'button',
+							class: 'wpmt-btn wpmt-btn-primary',
+							onClick: function () {
+								state.urlReplacement.showReport = false;
+								render();
+							}
+						}, [document.createTextNode(__('Close', 'omninox-site-toolkit'))])
+					])
+				])
+			]);
+			wrapper.appendChild(repModal);
+		}
 	}
 
 	/* -------------------------------------------------------------- Settings */

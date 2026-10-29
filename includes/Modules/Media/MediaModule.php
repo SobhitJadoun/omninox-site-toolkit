@@ -577,13 +577,48 @@ class MediaModule extends AbstractModule {
 				if ( ! \OmninoxSiteToolkit\License\FeatureGate::can_use( 'media', 'replace_original' ) ) {
 					return new \WP_Error( 'omninox_pro_required', __( 'Replacing original images in-place with WebP requires Omninox Pro.', 'omninox-site-toolkit' ), array( 'status' => 403 ) );
 				}
-				return $this->replace_originals_with_converted( absint( $params['offset'] ?? 0 ), absint( $params['batch'] ?? 200 ), 'webp' );
+				return $this->handle_url_replacement_batch( 'webp', $params );
 
 			case 'replace_originals_with_avif':
 				if ( ! \OmninoxSiteToolkit\License\FeatureGate::can_use( 'media', 'replace_original' ) ) {
 					return new \WP_Error( 'omninox_pro_required', __( 'Replacing original images in-place with AVIF requires Omninox Pro.', 'omninox-site-toolkit' ), array( 'status' => 403 ) );
 				}
-				return $this->replace_originals_with_converted( absint( $params['offset'] ?? 0 ), absint( $params['batch'] ?? 200 ), 'avif' );
+				return $this->handle_url_replacement_batch( 'avif', $params );
+
+			case 'url_replacement_preview':
+				return \OmninoxSiteToolkit\Modules\Media\Replacement\UrlReplacementEngine::start_job( array_merge( $params, array( 'mode' => 'preview' ) ) );
+
+			case 'url_replacement_start':
+				return \OmninoxSiteToolkit\Modules\Media\Replacement\UrlReplacementEngine::start_job( array_merge( $params, array( 'mode' => 'replace' ) ) );
+
+			case 'url_replacement_step':
+				return \OmninoxSiteToolkit\Modules\Media\Replacement\UrlReplacementEngine::step_job(
+					sanitize_text_field( $params['job_id'] ?? '' ),
+					absint( $params['batch'] ?? 100 )
+				);
+
+			case 'url_replacement_pause':
+				return \OmninoxSiteToolkit\Modules\Media\Replacement\UrlReplacementEngine::pause_job( sanitize_text_field( $params['job_id'] ?? '' ) );
+
+			case 'url_replacement_resume':
+				return \OmninoxSiteToolkit\Modules\Media\Replacement\UrlReplacementEngine::resume_job( sanitize_text_field( $params['job_id'] ?? '' ) );
+
+			case 'url_replacement_cancel':
+				return \OmninoxSiteToolkit\Modules\Media\Replacement\UrlReplacementEngine::cancel_job( sanitize_text_field( $params['job_id'] ?? '' ) );
+
+			case 'url_replacement_rollback':
+				return \OmninoxSiteToolkit\Modules\Media\Replacement\UrlReplacementEngine::rollback_job( sanitize_text_field( $params['job_id'] ?? '' ) );
+
+			case 'url_replacement_summary':
+				return \OmninoxSiteToolkit\Modules\Media\Replacement\UrlMappingIndex::get_summary( sanitize_key( $params['format'] ?? 'webp' ) );
+
+			case 'url_replacement_export_csv':
+				$csv = \OmninoxSiteToolkit\Modules\Media\Replacement\UrlMappingIndex::export_csv( sanitize_key( $params['format'] ?? 'webp' ) );
+				return array(
+					'success'  => true,
+					'filename' => 'image-url-replacement-map-' . gmdate( 'Y-m-d' ) . '.csv',
+					'csv_data' => $csv,
+				);
 
 			case 'set_conversion_format':
 				$format = in_array( $params['value'] ?? '', array( 'webp', 'avif', 'both' ), true ) ? $params['value'] : 'webp';
@@ -1598,102 +1633,97 @@ class MediaModule extends AbstractModule {
 	/**
 	 * Build an exact old-URL to new-URL map for every image that was actually converted.
 	 *
+	 * Uses high-performance UrlMappingIndex to stream verified pairs without filesystem stalls.
+	 *
 	 * @param string $format webp|avif.
 	 * @return array
 	 */
 	private function export_conversion_map( $format = 'webp' ) {
-		$meta_key = '_omninox_' . $format;
-		$ids      = get_posts(
-			array(
-				'post_type'      => 'attachment',
-				'post_mime_type' => array( 'image/jpeg', 'image/png', 'image/gif' ),
-				'post_status'    => 'inherit',
-				'posts_per_page' => 5000,
-				'fields'         => 'ids',
-				'meta_query'     => array(
-					array(
-						'key'     => $meta_key,
-						'compare' => 'EXISTS',
-					),
-					array(
-						'key'     => '_omninox_replaced',
-						'compare' => 'NOT EXISTS',
-					),
-				),
-			)
+		\OmninoxSiteToolkit\Modules\Media\Replacement\UrlMappingIndex::sync_mappings( $format, 500, 0 );
+
+		global $wpdb;
+		$table = \OmninoxSiteToolkit\Database\Schema::table( 'url_mappings' );
+		$rows  = $wpdb->get_results(
+			$wpdb->prepare(
+				"SELECT attachment_id, size_key, old_rel, new_rel, old_url, new_url, format 
+				 FROM {$table} 
+				 WHERE format = %s AND status = 'verified' AND new_file_exists = 1 
+				 ORDER BY id ASC LIMIT 5000",
+				$format
+			),
+			ARRAY_A
 		);
 
-		if ( ! empty( $ids ) ) {
-			update_meta_cache( 'post', $ids );
-		}
-
-		$uploads = wp_upload_dir();
-		$basedir = trailingslashit( $uploads['basedir'] );
-		$baseurl = trailingslashit( $uploads['baseurl'] );
-		$pairs   = array();
-
-		foreach ( $ids as $id ) {
-			$record = (array) get_post_meta( $id, $meta_key, true );
-
-			if ( empty( $record['files'] ) ) {
-				continue;
-			}
-
-			$original_file = get_post_meta( $id, '_wp_attached_file', true );
-			if ( ! $original_file ) {
-				continue;
-			}
-
-			$metadata   = wp_get_attachment_metadata( $id );
-			$dir        = trailingslashit( dirname( $original_file ) );
-			$candidates = array(
-				array( 'key' => '_main', 'file' => $original_file ),
-			);
-
-			foreach ( (array) ( $metadata['sizes'] ?? array() ) as $size_name => $size_info ) {
-				if ( ! empty( $size_info['file'] ) ) {
-					$candidates[] = array( 'key' => $size_name, 'file' => $dir . $size_info['file'] );
-				}
-			}
-
-			foreach ( (array) $record['files'] as $conv_relative ) {
-				$conv_stem = preg_replace( '/\.(webp|avif)$/i', '', $conv_relative );
-
-				foreach ( $candidates as $candidate ) {
-					$candidate_rel  = $candidate['file'];
-					$candidate_stem = preg_replace( '/\.(jpe?g|png|gif)$/i', '', $candidate_rel );
-
-					if ( $candidate_stem !== $conv_stem ) {
-						continue;
-					}
-
-					// Verify both files actually exist on disk right now.
-					if ( file_exists( $basedir . $candidate_rel ) && file_exists( $basedir . $conv_relative ) ) {
-						$pairs[] = array(
-							'attachment_id' => $id,
-							'size_key'      => $candidate['key'],
-							'old_rel'       => $candidate_rel,
-							'new_rel'       => $conv_relative,
-							'old'           => $baseurl . $candidate_rel,
-							'new'           => $baseurl . $conv_relative,
-							'format'        => $format,
-						);
-					}
-
-					break;
-				}
+		$pairs = array();
+		if ( ! empty( $rows ) ) {
+			foreach ( $rows as $r ) {
+				$pairs[] = array(
+					'attachment_id' => (int) $r['attachment_id'],
+					'size_key'      => $r['size_key'],
+					'old_rel'       => $r['old_rel'],
+					'new_rel'       => $r['new_rel'],
+					'old'           => $r['old_url'],
+					'new'           => $r['new_url'],
+					'format'        => $r['format'],
+				);
 			}
 		}
+
+		$csv_data = \OmninoxSiteToolkit\Modules\Media\Replacement\UrlMappingIndex::export_csv( $format );
 
 		return array(
-			'count'   => count( $pairs ),
-			'pairs'   => $pairs,
-			'format'  => $format,
-			'message' => sprintf(
+			'count'    => count( $pairs ),
+			'pairs'    => array_slice( $pairs, 0, 500 ),
+			'format'   => $format,
+			'csv_data' => $csv_data,
+			'message'  => sprintf(
 				/* translators: %d: count */
-				__( 'Found %d confirmed conversion URL pairs.', 'omninox-site-toolkit'),
+				__( 'Found %d confirmed conversion URL pairs.', 'omninox-site-toolkit' ),
 				count( $pairs )
 			),
+		);
+	}
+
+	/**
+	 * Handle batched URL replacement using high-performance UrlReplacementEngine.
+	 *
+	 * @param string $format webp|avif.
+	 * @param array  $params Request parameters.
+	 * @return array
+	 */
+	private function handle_url_replacement_batch( $format, array $params = array() ) {
+		$job_id = sanitize_text_field( $params['job_id'] ?? '' );
+
+		if ( empty( $job_id ) ) {
+			$init = \OmninoxSiteToolkit\Modules\Media\Replacement\UrlReplacementEngine::start_job(
+				array(
+					'format' => $format,
+					'mode'   => 'replace',
+				)
+			);
+
+			return array(
+				'done'         => false,
+				'job_id'       => $init['job_id'],
+				'offset'       => 5,
+				'total'        => 100,
+				'rows_changed' => 0,
+				'pairs_done'   => 0,
+				'message'      => $init['message'],
+			);
+		}
+
+		$batch_size = absint( $params['batch'] ?? 100 );
+		$step_res   = \OmninoxSiteToolkit\Modules\Media\Replacement\UrlReplacementEngine::step_job( $job_id, $batch_size );
+
+		return array(
+			'done'         => ! empty( $step_res['done'] ),
+			'job_id'       => $job_id,
+			'offset'       => (int) ( $step_res['progress'] ?? 50 ),
+			'total'        => 100,
+			'rows_changed' => (int) ( $step_res['rows_replaced'] ?? 0 ),
+			'pairs_done'   => (int) ( $step_res['replacements_count'] ?? 0 ),
+			'message'      => $step_res['message'] ?? '',
 		);
 	}
 

@@ -189,6 +189,66 @@ class Schema {
 			KEY scan_generation (scan_generation)
 		) {$charset};";
 
+		$url_mappings = self::table( 'url_mappings' );
+		$url_rollback = self::table( 'url_rollback' );
+		$url_jobs     = self::table( 'url_jobs' );
+
+		$sql[] = "CREATE TABLE {$url_mappings} (
+			id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+			attachment_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+			size_key VARCHAR(50) NOT NULL DEFAULT '_main',
+			format VARCHAR(20) NOT NULL DEFAULT 'webp',
+			old_rel VARCHAR(255) NOT NULL DEFAULT '',
+			new_rel VARCHAR(255) NOT NULL DEFAULT '',
+			old_url VARCHAR(500) NOT NULL DEFAULT '',
+			new_url VARCHAR(500) NOT NULL DEFAULT '',
+			old_file_exists TINYINT(1) NOT NULL DEFAULT 1,
+			new_file_exists TINYINT(1) NOT NULL DEFAULT 1,
+			status VARCHAR(20) NOT NULL DEFAULT 'verified',
+			created_at DATETIME NOT NULL DEFAULT '0000-00-00 00:00:00',
+			PRIMARY KEY (id),
+			KEY attachment_size (attachment_id, size_key, format),
+			KEY status_format (status, format),
+			KEY old_url_prefix (old_url(191)),
+			KEY format (format)
+		) {$charset};";
+
+		$sql[] = "CREATE TABLE {$url_rollback} (
+			id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+			job_id VARCHAR(64) NOT NULL DEFAULT '',
+			table_name VARCHAR(64) NOT NULL DEFAULT '',
+			row_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+			column_name VARCHAR(64) NOT NULL DEFAULT '',
+			original_value LONGTEXT NULL,
+			new_value LONGTEXT NULL,
+			created_at DATETIME NOT NULL DEFAULT '0000-00-00 00:00:00',
+			PRIMARY KEY (id),
+			KEY job_id (job_id),
+			KEY table_row (table_name, row_id)
+		) {$charset};";
+
+		$sql[] = "CREATE TABLE {$url_jobs} (
+			id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+			job_id VARCHAR(64) NOT NULL DEFAULT '',
+			mode VARCHAR(20) NOT NULL DEFAULT 'replace',
+			format VARCHAR(20) NOT NULL DEFAULT 'webp',
+			status VARCHAR(32) NOT NULL DEFAULT 'idle',
+			current_step VARCHAR(50) NOT NULL DEFAULT 'init',
+			cursor_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+			total_mappings INT UNSIGNED NOT NULL DEFAULT 0,
+			rows_inspected INT UNSIGNED NOT NULL DEFAULT 0,
+			rows_replaced INT UNSIGNED NOT NULL DEFAULT 0,
+			replacements_count INT UNSIGNED NOT NULL DEFAULT 0,
+			elapsed_ms INT UNSIGNED NOT NULL DEFAULT 0,
+			checkpoint_data LONGTEXT NULL,
+			error_message TEXT NULL,
+			started_at DATETIME NOT NULL DEFAULT '0000-00-00 00:00:00',
+			updated_at DATETIME NOT NULL DEFAULT '0000-00-00 00:00:00',
+			PRIMARY KEY (id),
+			UNIQUE KEY job_id (job_id),
+			KEY status (status)
+		) {$charset};";
+
 		foreach ( $sql as $statement ) {
 			dbDelta( $statement );
 		}
