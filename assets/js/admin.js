@@ -133,6 +133,50 @@
 		}
 	}
 
+	var isRefreshingNonce = false;
+	var nonceRefreshQueue = [];
+
+	function refreshNonceAndRetry(path, options) {
+		options = Object.assign({}, options, { _isRetry: true });
+
+		return new Promise(function (resolve, reject) {
+			nonceRefreshQueue.push({ path: path, options: options, resolve: resolve, reject: reject });
+
+			if (isRefreshingNonce) {
+				return;
+			}
+			isRefreshingNonce = true;
+
+			var ajaxUrl = WPMT.ajaxUrl || (WPMT.adminUrl ? WPMT.adminUrl + 'admin-ajax.php' : '/wp-admin/admin-ajax.php');
+			fetch(ajaxUrl + '?action=omninox_refresh_nonce', {
+				method: 'GET',
+				credentials: 'same-origin'
+			})
+				.then(function (res) { return res.json(); })
+				.then(function (resData) {
+					if (resData && resData.success && resData.data && resData.data.nonce) {
+						WPMT.nonce = resData.data.nonce;
+						var queue = nonceRefreshQueue.slice();
+						nonceRefreshQueue = [];
+						isRefreshingNonce = false;
+						queue.forEach(function (item) {
+							api(item.path, item.options).then(item.resolve).catch(item.reject);
+						});
+					} else {
+						throw new Error(__('Session expired. Please refresh the page.', 'omninox-site-toolkit'));
+					}
+				})
+				.catch(function (err) {
+					var queue = nonceRefreshQueue.slice();
+					nonceRefreshQueue = [];
+					isRefreshingNonce = false;
+					queue.forEach(function (item) {
+						item.reject(err);
+					});
+				});
+		});
+	}
+
 	function api(path, options) {
 		options = options || {};
 		var trackLoader = !options.silent;
@@ -162,7 +206,7 @@
 					url = parsedUrl.toString();
 				}
 			}
-		} catch (e) {}
+		} catch (e) { }
 
 		var headers = {
 			'Content-Type': 'application/json'
@@ -184,7 +228,7 @@
 				if (restoreToken) {
 					headers['X-Omninox-Restore-Token'] = restoreToken;
 				}
-			} catch (e) {}
+			} catch (e) { }
 		}
 
 		// Include X-WP-Nonce on all standard administrative requests.
@@ -213,6 +257,10 @@
 
 			return response.json().catch(function () { return {}; }).then(function (data) {
 				if (!response.ok) {
+					if (!options._isRetry && (response.status === 403 || response.status === 401) && data && (data.code === 'rest_cookie_invalid_nonce' || (data.message && String(data.message).indexOf('Cookie check failed') !== -1))) {
+						return refreshNonceAndRetry(path, options);
+					}
+
 					var msg = (data && data.message);
 					if (!msg) {
 						if (response.status === 401) {
@@ -310,6 +358,10 @@
 		if (actionId.indexOf('search') !== -1) return 'search';
 		if (actionId.indexOf('seo') !== -1) return 'seo';
 		return 'sparkle';
+	}
+
+	function strtoupper(str) {
+		return String(str || '').toUpperCase();
 	}
 
 	function el(tag, attrs, children) {
@@ -1031,6 +1083,74 @@
 		next();
 	}
 
+	function renderEffectivenessCard(items) {
+		if (!items || !items.length) {
+			return null;
+		}
+
+		var rows = items.map(function (item) {
+			var settingChipClass = item.setting === 'on' ? 'wpmt-chip-pass' : 'wpmt-chip';
+			var settingText = item.setting === 'on' ? __('ON', 'omninox-site-toolkit') : __('OFF', 'omninox-site-toolkit');
+
+			var effectChipClass = 'wpmt-chip';
+			if (item.status === 'verified') {
+				effectChipClass = 'wpmt-chip-pass';
+			} else if (item.status === 'conflict' || item.status === 'headers_not_applied' || item.status === 'wrong_resource') {
+				effectChipClass = 'wpmt-chip-error';
+			} else if (item.status === 'warning') {
+				effectChipClass = 'wpmt-chip-warning';
+			} else if (item.status === 'no_eligible') {
+				effectChipClass = 'wpmt-chip-info';
+			}
+
+			var detailsCol = [
+				el('div', { style: 'font-weight:500;color:var(--wpmt-ink);margin-bottom:2px;' }, [document.createTextNode(item.evidence || '')])
+			];
+			if (item.recommendation) {
+				detailsCol.push(el('div', { style: 'font-size:12px;color:var(--wpmt-ink-soft);margin-top:4px;' }, [
+					el('strong', { text: __('Recommendation: ', 'omninox-site-toolkit') }),
+					document.createTextNode(item.recommendation)
+				]));
+			}
+
+			return el('tr', {}, [
+				el('td', { style: 'font-weight:600;white-space:nowrap;' }, [document.createTextNode(item.label || item.id)]),
+				el('td', { style: 'text-align:center;width:80px;' }, [
+					el('span', { class: 'wpmt-chip ' + settingChipClass }, [document.createTextNode(settingText)])
+				]),
+				el('td', { style: 'white-space:nowrap;width:170px;' }, [
+					el('span', { class: 'wpmt-chip ' + effectChipClass }, [document.createTextNode(item.effect || item.status)])
+				]),
+				el('td', {}, detailsCol)
+			]);
+		});
+
+		return el('div', { class: 'wpmt-card' }, [
+			el('div', { class: 'wpmt-card-header', style: 'margin-bottom:12px;' }, [
+				el('h3', { style: 'margin:0;font-size:16px;display:flex;align-items:center;gap:8px;' }, [
+					icon('performance', 18),
+					document.createTextNode(__('Optimization Effectiveness Diagnostics (Live Anonymous Scan)', 'omninox-site-toolkit'))
+				]),
+				el('p', { style: 'margin:4px 0 0;font-size:13px;color:var(--wpmt-ink-soft);' }, [
+					document.createTextNode(__('Independently tests anonymous frontend output and response headers to verify if optimizations are actually reaching visitors.', 'omninox-site-toolkit'))
+				])
+			]),
+			el('div', { style: 'overflow-x:auto;' }, [
+				el('table', { class: 'wpmt-table', style: 'width:100%;margin:0;' }, [
+					el('thead', {}, [
+						el('tr', {}, [
+							el('th', { style: 'text-align:left;' }, [document.createTextNode(__('Feature', 'omninox-site-toolkit'))]),
+							el('th', { style: 'text-align:center;width:80px;' }, [document.createTextNode(__('Setting', 'omninox-site-toolkit'))]),
+							el('th', { style: 'text-align:left;width:170px;' }, [document.createTextNode(__('Actual Frontend Effect', 'omninox-site-toolkit'))]),
+							el('th', { style: 'text-align:left;' }, [document.createTextNode(__('Supporting Evidence & Details', 'omninox-site-toolkit'))])
+						])
+					]),
+					el('tbody', {}, rows)
+				])
+			])
+		]);
+	}
+
 	/* ---------------------------------------------------------------- Module */
 
 	function renderModule(wrapper, id) {
@@ -1193,6 +1313,13 @@
 				])
 			])
 		]));
+
+		if (id === 'performance' && result.effectiveness && result.effectiveness.length) {
+			var effCard = renderEffectivenessCard(result.effectiveness);
+			if (effCard) {
+				wrapper.appendChild(effCard);
+			}
+		}
 
 		var issues = result.issues || [];
 		var groups = {};
@@ -1796,6 +1923,7 @@
 
 	// Minimal %s substitution for a single argument.
 	function actionRow(module, action) {
+		if (action.type === 'original_compression') { return originalCompressionPanel(); }
 		var key = module.id + ':' + action.id;
 
 		// Pro gating: a locked action shows a PRO badge and an upgrade prompt
@@ -2434,12 +2562,16 @@
 	function applyFix(moduleId, action, params) {
 		var key = moduleId + ':' + action;
 
-		// Optimistically update module action state so UI updates toggle state immediately
+		// Track previous value in case request fails or reverts
 		var mod = moduleById(moduleId);
+		var previousVal = undefined;
 		if (mod && mod.actions) {
 			mod.actions.forEach(function (act) {
-				if (act.id === action && params && params.value !== undefined) {
-					act.current = params.value;
+				if (act.id === action) {
+					previousVal = act.current;
+					if (params && params.value !== undefined) {
+						act.current = params.value;
+					}
 				}
 			});
 		}
@@ -2459,23 +2591,55 @@
 					note = formatValue(result.previous) + ' → ' + formatValue(result.current);
 				}
 
+				// Authoritatively sync action state from server response immediately
+				if (mod && mod.actions) {
+					mod.actions.forEach(function (act) {
+						if (act.id === action) {
+							if (result.enabled !== undefined) {
+								act.current = result.enabled ? 1 : 0;
+							} else if (result.authoritative !== undefined) {
+								act.current = result.authoritative ? 1 : 0;
+							} else if (result.current !== undefined) {
+								act.current = (result.current === 'on' || result.current === 1 || result.current === true) ? 1 : 0;
+							}
+							if (result.previous !== undefined) {
+								act.previous = result.previous;
+							}
+						}
+					});
+				}
+
 				if (result && (result.rows || result.output !== undefined || result.body !== undefined || result.result !== undefined || result.status !== undefined || result.affected_rows !== undefined)) {
 					state.inspect[key] = result;
 					state.inspector = state.inspector || {};
 					state.inspector[moduleId] = result;
 				}
 
+				// Unblock UI and notify user immediately so button doesn't freeze during slow background scan
+				state.busy[key] = false;
+				render();
+				toast(note);
+
 				return Promise.all([loadModules(), loadSettings(), loadChanges()])
 					.then(function () {
 						return Promise.all([runScan(moduleId), loadOverview()]);
 					})
 					.then(function () {
-						state.busy[key] = false;
 						render();
-						toast(note);
+					})
+					.catch(function () {
+						render();
 					});
 			})
 			.catch(function (error) {
+				// Revert optimistic toggle state on failure
+				if (previousVal !== undefined && mod && mod.actions) {
+					mod.actions.forEach(function (act) {
+						if (act.id === action) {
+							act.current = previousVal;
+						}
+					});
+				}
 				state.busy[key] = false;
 				render();
 				toast(error.message || __('Could not apply fix.', 'omninox-site-toolkit'), true);
@@ -2487,15 +2651,17 @@
 		var changes = (result.changes || []).map(function (change) {
 			return (change.label || __('Change', 'omninox-site-toolkit')) + ': ' + formatValue(change.from) + ' → ' + formatValue(change.to);
 		});
-		var files = result.files_modified || result.files || [];
+		var files = result.files_modified || result.files;
 
 		if (changes.length) {
 			note += ' ' + changes.join('; ') + '.';
 		}
 
-		note += ' ' + (files.length
-			? __('Files modified', 'omninox-site-toolkit') + ': ' + files.join(', ') + '.'
-			: __('Files modified: none.', 'omninox-site-toolkit'));
+		if (Array.isArray(files) && files.length > 0) {
+			note += ' ' + __('Files modified', 'omninox-site-toolkit') + ': ' + files.join(', ') + '.';
+		} else if (Array.isArray(files) && files.length === 0 && (result.files_modified !== undefined || result.files !== undefined)) {
+			note += ' ' + __('Files modified: none.', 'omninox-site-toolkit');
+		}
 
 		return note;
 	}
@@ -2510,7 +2676,138 @@
 	 * @param {Object} fixedParams Extra params merged into every request (e.g.
 	 *                             { file: 'site-backup.zip' } for restore_full).
 	 */
+	function originalCompressionPanel() {
+		var host = el('section', { class: 'wpmt-action-form-wrap', 'aria-label': 'Original Image Compression' });
+		var settings = state.originalCompressionSettings || (state.originalCompressionSettings = {
+			target: '102400', custom_kb: '100', quality_floor: '82', backup: 'yes', retention_days: '30',
+			strip_metadata: 'no', lossy_png: 'no', keep_smaller: 'yes', force: 'no', mime: '',
+			min_kb: '0', max_kb: '0', date_from: '', date_to: '', exclude: ''
+		});
+		var busy = false, current = null, page = null;
+		var results = el('div', { 'aria-live': 'polite' });
+		var history = el('div', {});
+		var controls = [];
+		function field(key, label, choices, type) {
+			var control = choices ? el('select', { class: 'wpmt-select', style: 'width:100%;min-width:0;max-width:100%;box-sizing:border-box', onChange: function (e) { settings[key] = e.target.value; } },
+				choices.map(function (c) { return el('option', { value: c[0], text: c[1], selected: settings[key] === c[0] }); })) :
+				el('input', { type: type || 'number', value: settings[key], min: '0', onChange: function (e) { settings[key] = e.target.value; } });
+			controls.push(control);
+			return el('label', { class: 'wpmt-field' }, [el('span', { text: label }), control]);
+		}
+		function call(action, params) { return api('/fix/media', { method: 'POST', silent: action === 'compression_step' || action === 'compression_status' || action === 'compression_history', body: { action: action, params: params || {} } }); }
+		function button(label, handler, disabled) { return el('button', { type: 'button', class: 'wpmt-btn', text: label, disabled: !!disabled, onClick: handler }); }
+		function bytes(n) { return Number(n || 0).toLocaleString() + ' bytes'; }
+		function invoke(action, params) {
+			if (busy) { return; } busy = true;
+			return call(action, params).then(function (job) { current = job; draw(); }).catch(function (e) { toast(e.message, true); }).finally(function () { busy = false; });
+		}
+		function draw() {
+			results.textContent = '';
+			if (!current) { return; }
+			var j = current, selected = {};
+			results.appendChild(el('h4', { text: 'Job: ' + j.status }));
+			results.appendChild(el('p', { text: j.message }));
+			if (j.last_error) { results.appendChild(el('p', { text: j.last_error, role: 'alert' })); }
+			var metrics = [
+				['Eligible images', j.eligible], ['Processed', j.processed], ['Actually optimized', j.optimized],
+				['Unchanged', j.unchanged], ['Skipped', j.skipped], ['Failed', j.failed],
+				['Measured original total (processed files)', bytes(j.before)], ['Measured final total at processing', bytes(j.after)],
+				['Verified savings at processing', bytes(j.saved)], ['Weighted reduction', j.ratio + '%'],
+				['Restored', j.restored], ['Restore failures', j.restore_failed]
+			];
+			results.appendChild(el('table', { class: 'widefat striped' }, [el('tbody', {}, metrics.map(function (m) {
+				return el('tr', {}, [el('th', { scope: 'row', text: m[0] }), el('td', { text: String(m[1]) })]);
+			}))]));
+			if (j.restored) { results.appendChild(el('p', { text: 'Compression totals are historical. Restored files no longer retain those savings.' })); }
+			var actions = el('div', { class: 'wpmt-form-fields' });
+			if (j.status === 'running' || j.status === 'discovering') { actions.appendChild(button('Pause', function () { invoke('compression_pause', { job_id: j.id }); })); }
+			if (j.status === 'paused') { actions.appendChild(button('Resume', function () { invoke('compression_resume', { job_id: j.id }); })); }
+			if (['running', 'discovering', 'paused', 'restoring'].indexOf(j.status) >= 0) {
+				actions.appendChild(button('Cancel remaining work', function () { invoke('compression_cancel', { job_id: j.id }); }));
+			}
+			if (['completed', 'cancelled', 'paused'].indexOf(j.status) >= 0) {
+				actions.appendChild(button('Restore all from this job', function () {
+					if (window.confirm('Restore backed-up originals from this job? Changed files will be protected.')) { invoke('compression_restore', { job_id: j.id }); }
+				}));
+				actions.appendChild(button('Restore selected results', function () {
+					var ids = Object.keys(selected).filter(function (id) { return selected[id]; }).map(Number);
+					if (!ids.length) { toast('Select result rows first.', true); return; }
+					if (window.confirm('Restore the selected original images?')) { invoke('compression_restore', { job_id: j.id, ids: ids }); }
+				}));
+			}
+			results.appendChild(actions);
+			var rows = (j.results || []).map(function (row) {
+				return el('tr', {}, [
+					el('td', {}, [el('input', { type: 'checkbox', 'aria-label': 'Select ' + row.file, onChange: function (e) { selected[row.id] = e.target.checked; } })]),
+					el('td', { text: row.file || ('Attachment ' + row.id) }), el('td', { text: bytes(row.before) }),
+					el('td', { text: bytes(row.after) }), el('td', { text: bytes(row.saved) + (row.before ? ' (' + (100 * row.saved / row.before).toFixed(1) + '%)' : '') }),
+					el('td', { text: row.restored ? 'Restored' : row.status.replace(/_/g, ' ') + (row.status === 'optimized' && !row.target_reached ? ' — target not reached' : '') }),
+					el('td', { text: row.message || '' })
+				]);
+			});
+			results.appendChild(el('div', { style: 'overflow-x:auto' }, [el('table', { class: 'widefat striped' }, [
+				el('thead', {}, [el('tr', {}, ['Select', 'Image', 'Before', 'After', 'Saved', 'Status', 'Details'].map(function (s) { return el('th', { text: s }); }))]), el('tbody', {}, rows)
+			])]));
+			results.appendChild(button('Previous results', function () { page = Math.max(0, j.result_offset - 50); invoke('compression_status', { job_id: j.id, result_offset: page }); }, j.result_offset === 0));
+			results.appendChild(button('Next results', function () { page = j.result_offset + 50; invoke('compression_status', { job_id: j.id, result_offset: page }); }, j.result_offset + 50 >= j.processed));
+			if ((j.recovery_history || []).length) {
+				results.appendChild(el('details', {}, [el('summary', { text: 'Recovery history' }), el('ul', {}, j.recovery_history.map(function (r) {
+					return el('li', { text: '#' + r.id + ': ' + r.status + ' — ' + new Date(r.at * 1000).toLocaleString() + (r.message ? ': ' + r.message : '') });
+				}))]));
+			}
+		}
+		host.appendChild(el('h3', { text: 'Original Image Compression' }));
+		host.appendChild(el('p', { text: 'JPEG/JPG → JPEG/JPG; PNG → PNG. No resizing or WebP/AVIF conversion. WordPress scaled copies and thumbnails remain unchanged. A quality floor reduces risk but cannot guarantee visually lossless JPEGs. Preview important images and retain backups.' }));
+		host.appendChild(el('div', { class: 'wpmt-form-fields' }, [
+			field('target', 'Target', [['102400', '100 KB'], ['153600', '150 KB'], ['204800', '200 KB'], ['307200', '300 KB'], ['custom', 'Custom']]),
+			field('custom_kb', 'Custom target (KB)'), field('quality_floor', 'JPEG quality floor (75–95; default 82)'),
+			field('keep_smaller', 'When target cannot be reached', [['yes', 'Keep a verified smaller result'], ['no', 'Leave original unchanged']]),
+			field('backup', 'Retain recoverable originals', [['yes', 'Yes'], ['no', 'No — only transaction recovery']]), field('retention_days', 'Backup retention days (1–3650)'),
+			field('strip_metadata', 'Remove optional JPEG metadata', [['no', 'No'], ['yes', 'I consent (EXIF and ICC retained)']]),
+			field('lossy_png', 'Optional lossy PNG', [['no', 'No — lossless only'], ['yes', 'I consent to conservative quantization (Imagick only)']]),
+			field('force', 'Force recompress', [['no', 'No — protect previous generations'], ['yes', 'I accept additional JPEG generation loss']]),
+			field('mime', 'File type', [['', 'JPEG and PNG'], ['image/jpeg', 'JPEG/JPG'], ['image/png', 'PNG']]),
+			field('min_kb', 'Minimum source KB'), field('max_kb', 'Maximum source KB (0 = no limit)'),
+			field('date_from', 'Uploaded from', null, 'date'), field('date_to', 'Uploaded through', null, 'date'),
+			field('exclude', 'Exclude attachment IDs (comma separated)', null, 'text')
+		]));
+		var selection = state.compressionSelection || [];
+		host.appendChild(el('p', { text: selection.length ? selection.length + ' selected attachment(s).' : 'All eligible original JPEG/PNG images matching these filters.' }));
+		if (selection.length) { host.appendChild(button('Use all eligible images', function () { state.compressionSelection = []; render(); })); }
+		host.appendChild(button('Start compression', function () {
+			if (!window.confirm('Rewrite the selected original JPEG/PNG files using these settings? The target size is not guaranteed.')) { return; }
+			var params = Object.assign({}, settings, { ids: selection, request_id: Date.now().toString(36) + '-' + Math.random().toString(36).slice(2) });
+			params.target = settings.target === 'custom' ? Math.round(Number(settings.custom_kb) * 1024) : Number(settings.target);
+			params.min_bytes = Math.round(Number(settings.min_kb) * 1024); params.max_bytes = Math.round(Number(settings.max_kb) * 1024);
+			page = null; invoke('compression_start', params);
+		}));
+		host.appendChild(el('p', { text: 'Jobs checkpoint each image and continue through WordPress cron when the browser closes. Cron must be running. Private backups use server storage outside the website; temporary-directory cleanup can remove them unless OMNINOX_COMPRESSION_STORAGE points to persistent private storage.' }));
+		host.appendChild(history); host.appendChild(results);
+		call('compression_history').then(function (data) {
+			if (!document.contains(host)) { return; }
+			history.appendChild(el('p', { text: 'Available: ' + Object.keys(data.capabilities).filter(function (k) { return data.capabilities[k]; }).join(', ') }));
+			(data.jobs || []).forEach(function (j) { history.appendChild(button(new Date(j.created * 1000).toLocaleString() + ' — ' + j.status, function () { current = j; page = null; draw(); })); });
+			if (!current && data.jobs.length) { current = data.jobs[0]; draw(); }
+		}).catch(function (e) { toast(e.message, true); });
+		function poll() {
+			if (!document.contains(host)) { return; }
+			if (current && !busy && ['running', 'discovering', 'restoring'].indexOf(current.status) >= 0) {
+				var params = { job_id: current.id }; if (page !== null) { params.result_offset = page; }
+				invoke('compression_step', params).finally(function () { window.setTimeout(poll, 2000); });
+			} else { window.setTimeout(poll, 2000); }
+		}
+		window.setTimeout(poll, 2000);
+		return host;
+	}
+
 	function runBatch(moduleId, action, ids, fixedParams) {
+		if (moduleId === 'media' && action === 'bulk_compress') {
+			state.compressionSelection = ids || [];
+			state.mediaTab = 'optimize';
+			render();
+			toast(__('Review the Original Image Compression settings, then start the job.', 'omninox-site-toolkit'));
+			return;
+		}
 		var key = moduleId + ':' + action;
 		var batch = 10;
 		var offset = 0;
@@ -2564,7 +2861,7 @@
 				if (result.continuation_token) {
 					try {
 						sessionStorage.setItem('omninox_restore_token', result.continuation_token);
-					} catch (e) {}
+					} catch (e) { }
 				}
 
 				totals.done += (result.converted || result.compressed || result.regenerated || result.pairs_done || 0);
@@ -2603,7 +2900,7 @@
 				delete state.restoreStatus;
 				try {
 					sessionStorage.removeItem('omninox_restore_token');
-				} catch (e) {}
+				} catch (e) { }
 			}
 			render();
 
@@ -2720,7 +3017,7 @@
 									if (serverStatus.continuation_token) {
 										try {
 											sessionStorage.setItem('omninox_restore_token', serverStatus.continuation_token);
-										} catch (e) {}
+										} catch (e) { }
 									}
 									if (typeof serverStatus.offset === 'number') {
 										offset = serverStatus.offset;
@@ -3073,7 +3370,7 @@
 						state.restoreStatus = status;
 						render();
 					}
-				}).catch(function () {});
+				}).catch(function () { });
 		}
 
 		var alertBox = null;
@@ -4436,7 +4733,7 @@
 							})
 						]),
 						el('td', {}, [
-							( (typeof item.references_count !== 'undefined' ? item.references_count : item.reference_count) > 0 )
+							((typeof item.references_count !== 'undefined' ? item.references_count : item.reference_count) > 0)
 								? el('button', {
 									type: 'button',
 									class: 'wpmt-btn wpmt-btn-sm',
@@ -4446,7 +4743,7 @@
 									}
 								}, [
 									document.createTextNode(
-										(typeof item.references_count !== 'undefined' ? item.references_count : item.reference_count) + ' ' + 
+										(typeof item.references_count !== 'undefined' ? item.references_count : item.reference_count) + ' ' +
 										((typeof item.references_count !== 'undefined' ? item.references_count : item.reference_count) === 1 ? __('reference', 'omninox-site-toolkit') : __('references', 'omninox-site-toolkit'))
 									)
 								])
@@ -4568,11 +4865,13 @@
 		if (selectedCount > 0) {
 			var bulkBar = el('div', { class: 'wpmt-bulk-bar' }, [
 				el('div', { style: 'display:flex;align-items:center;gap:12px;' }, [
-					el('strong', { text: sprintf(
-						/* translators: %d: count */
-						__('%d images selected', 'omninox-site-toolkit'),
-						selectedCount
-					) }),
+					el('strong', {
+						text: sprintf(
+							/* translators: %d: count */
+							__('%d images selected', 'omninox-site-toolkit'),
+							selectedCount
+						)
+					}),
 					el('button', {
 						type: 'button',
 						class: 'wpmt-btn wpmt-btn-sm',
@@ -4987,11 +5286,13 @@
 						el('strong', { text: __('Permanent Image Deletion Warning', 'omninox-site-toolkit') })
 					]),
 					el('div', { style: 'padding:20px;font-size:13px;' }, [
-						el('p', { style: 'margin:0 0 10px;line-height:1.5;', text: sprintf(
-							/* translators: %d: count */
-							__('Are you sure you want to permanently delete %d selected image(s)?', 'omninox-site-toolkit'),
-							(delData.ids || []).length
-						) }),
+						el('p', {
+							style: 'margin:0 0 10px;line-height:1.5;', text: sprintf(
+								/* translators: %d: count */
+								__('Are you sure you want to permanently delete %d selected image(s)?', 'omninox-site-toolkit'),
+								(delData.ids || []).length
+							)
+						}),
 						el('div', { style: 'background:var(--wpmt-surface-2);border-left:3px solid var(--wpmt-critical);padding:10px 12px;margin-bottom:12px;border-radius:var(--wpmt-radius-xs);font-size:12px;color:var(--wpmt-ink-soft);' }, [
 							el('strong', { style: 'color:var(--wpmt-critical);', text: __('Caution: This action is irreversible!', 'omninox-site-toolkit') }),
 							el('p', { style: 'margin:4px 0 0;', text: __('WordPress will permanently erase the database attachment record, the original file, and all generated intermediate thumbnail derivatives from your server storage.', 'omninox-site-toolkit') })
@@ -5358,10 +5659,13 @@
 			method: 'POST',
 			body: { action: 'url_replacement_summary', params: { format: fmt } }
 		}).then(function (res) {
+			state.busy['url_summary_load'] = false;
 			if (res) {
 				state.urlReplacement.summary = res;
 				render();
 			}
+		}).catch(function () {
+			state.busy['url_summary_load'] = false;
 		});
 	}
 
@@ -5451,9 +5755,15 @@
 				loadUrlReplacementSummary();
 			} else {
 				render();
-				setTimeout(stepUrlReplacement, 60);
+				setTimeout(stepUrlReplacement, 120);
 			}
 		}).catch(function (err) {
+			if (err && (err.code === 'omninox_rate_limited' || err.status === 429)) {
+				state.urlReplacement.stepLabel = __('Rate limit reached, pausing briefly before auto-resuming…', 'omninox-site-toolkit');
+				render();
+				setTimeout(stepUrlReplacement, 2500);
+				return;
+			}
 			state.urlReplacement.active = false;
 			render();
 			toast(err.message || __('URL replacement step interrupted.', 'omninox-site-toolkit'), true);
@@ -5564,7 +5874,7 @@
 		};
 
 		var isRunning = state.urlReplacement.active;
-		var isPaused  = (state.urlReplacement.status === 'paused');
+		var isPaused = (state.urlReplacement.status === 'paused');
 		var isPreview = (state.urlReplacement.mode === 'preview');
 
 		var card = el('div', { class: 'wpmt-card wpmt-url-engine-card', style: 'margin-bottom:20px;' }, [
@@ -5580,7 +5890,7 @@
 				el('div', { style: 'display:flex;align-items:center;gap:10px;' }, [
 					el('span', {
 						class: 'wpmt-badge-status is-' + (isRunning ? 'used' : (state.urlReplacement.status === 'complete' ? 'pass' : 'notice')),
-						text: isRunning ? (isPaused ? __('PAUSED', 'omninox-site-toolkit') : (isPreview ? __('PREVIEWING', 'omninox-site-toolkit') : __('REPLACING', 'omninox-site-toolkit'))) : strtoupper(state.urlReplacement.status || 'idle')
+						text: isRunning ? (isPaused ? __('PAUSED', 'omninox-site-toolkit') : (isPreview ? __('PREVIEWING', 'omninox-site-toolkit') : __('REPLACING', 'omninox-site-toolkit'))) : String(state.urlReplacement.status || 'idle').toUpperCase()
 					})
 				])
 			]),
@@ -5725,7 +6035,7 @@
 						el('p', { style: 'margin:0 0 12px;font-weight:600;color:var(--wpmt-ink);', text: rep.message || __('Execution complete.', 'omninox-site-toolkit') }),
 						el('table', { class: 'wpmt-table', style: 'width:100%;margin-bottom:14px;' }, [
 							el('tbody', {}, [
-								el('tr', {}, [el('td', { text: __('Execution Mode', 'omninox-site-toolkit') }), el('td', { style: 'font-weight:600;', text: strtoupper(rep.mode || 'replace') })]),
+								el('tr', {}, [el('td', { text: __('Execution Mode', 'omninox-site-toolkit') }), el('td', { style: 'font-weight:600;', text: String(rep.mode || 'replace').toUpperCase() })]),
 								el('tr', {}, [el('td', { text: __('Total Rows Scanned', 'omninox-site-toolkit') }), el('td', { style: 'font-weight:600;', text: String(rep.rows_inspected || 0) })]),
 								el('tr', {}, [el('td', { text: __('Database Rows Updated', 'omninox-site-toolkit') }), el('td', { style: 'font-weight:600;color:var(--wpmt-primary);', text: String(rep.rows_replaced || 0) })]),
 								el('tr', {}, [el('td', { text: __('URL Occurrences Replaced', 'omninox-site-toolkit') }), el('td', { style: 'font-weight:600;', text: String(rep.replacements_count || 0) })]),
@@ -6107,7 +6417,7 @@
 	window.addEventListener('hashchange', function () {
 		state.route = routeFromHash();
 		if (state.route !== 'backups') {
-			try { sessionStorage.removeItem('omninox_restore_token'); } catch (e) {}
+			try { sessionStorage.removeItem('omninox_restore_token'); } catch (e) { }
 		}
 		render();
 		ensureResults(state.route);
@@ -6115,7 +6425,7 @@
 
 	state.route = routeFromHash();
 	if (state.route !== 'backups') {
-		try { sessionStorage.removeItem('omninox_restore_token'); } catch (e) {}
+		try { sessionStorage.removeItem('omninox_restore_token'); } catch (e) { }
 	}
 	render();
 

@@ -23,6 +23,22 @@ class Assets {
 	 */
 	public function boot() {
 		add_action( 'admin_enqueue_scripts', array( $this, 'enqueue' ) );
+		add_action( 'wp_ajax_omninox_refresh_nonce', array( $this, 'ajax_refresh_nonce' ) );
+	}
+
+	/**
+	 * Refresh the REST API nonce for authenticated administrators.
+	 */
+	public function ajax_refresh_nonce() {
+		if ( ! is_user_logged_in() || ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => __( 'Forbidden', 'omninox-site-toolkit' ) ), 403 );
+		}
+
+		wp_send_json_success(
+			array(
+				'nonce' => wp_create_nonce( 'wp_rest' ),
+			)
+		);
 	}
 
 	/**
@@ -65,6 +81,7 @@ class Assets {
 			'root'       => esc_url_raw( $rest_root ),
 			'nonce'      => wp_create_nonce( 'wp_rest' ),
 			'adminUrl'   => admin_url(),
+			'ajaxUrl'    => admin_url( 'admin-ajax.php' ),
 			'pluginUrl'  => OMNINOX_SITE_TOOLKIT_URL,
 			'siteName'   => get_bloginfo( 'name' ),
 			'theme'      => Settings::instance()->get( 'theme', 'auto' ),

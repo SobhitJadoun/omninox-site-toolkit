@@ -1,6 +1,6 @@
 <?php
 /**
- * Module 8: Accessibility Scanner (static analysis of rendered markup).
+ * Module 8: Accessibility Scanner & Remediation Engine.
  *
  * @package OmninoxSiteToolkit
  */
@@ -9,6 +9,8 @@ namespace OmninoxSiteToolkit\Modules\Accessibility;
 
 use OmninoxSiteToolkit\Abstracts\AbstractModule;
 use OmninoxSiteToolkit\Helpers\Utils;
+use OmninoxSiteToolkit\Core\Settings;
+use OmninoxSiteToolkit\Services\ValueHistory;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -22,17 +24,44 @@ class AccessibilityModule extends AbstractModule {
 	}
 
 	/**
-	 * Actions.
+	 * Register front-end accessibility remediation hooks if enabled.
+	 */
+	public function register() {
+		$settings = Settings::instance();
+		$enabled  = ! empty( $settings->get( 'optimizations.a11y_remediation' ) );
+
+		if ( ! $enabled || is_admin() || wp_doing_ajax() || ( defined( 'REST_REQUEST' ) && REST_REQUEST ) ) {
+			return;
+		}
+
+		add_action( 'wp_head', array( $this, 'inject_a11y_styles' ), 99 );
+		add_action( 'wp_body_open', array( $this, 'inject_skip_link' ), 1 );
+		add_filter( 'the_content', array( $this, 'remediate_markup' ), 98 );
+	}
+
+	/**
+	 * Toggles and actions in the UI.
 	 *
 	 * @return array
 	 */
 	public function get_actions() {
+		$current = (array) Settings::instance()->get( 'optimizations', array() );
+
 		return array(
 			array(
+				'id'       => 'a11y_remediation',
+				'label'    => __( 'Real-Time Accessibility Remediation (ARIA labels & Focus Visibility)', 'omninox-site-toolkit' ),
+				'type'     => 'toggle',
+				'current'  => ! empty( $current['a11y_remediation'] ) ? 1 : 0,
+				'previous' => ValueHistory::previous( 'opt_a11y_remediation' ),
+				'history'  => ValueHistory::summary( 'opt_a11y_remediation' ),
+				'notice'   => __( 'Automatically injects accessible ARIA labels for icon links, unlabelled buttons, form inputs, high-contrast keyboard focus outlines, and mobile touch target minimum sizing.', 'omninox-site-toolkit' ),
+			),
+			array(
 				'id'     => 'fill_alt_filenames',
-				'label'  => __( 'Fill Missing Alt Text from Filenames', 'omninox-site-toolkit'),
+				'label'  => __( 'Fill Missing Alt Text from Filenames', 'omninox-site-toolkit' ),
 				'type'   => 'button',
-				'notice' => __( 'Automatically generates clean, human-readable alt text for images missing alt attributes based on cleaned media filenames.', 'omninox-site-toolkit'),
+				'notice' => __( 'Generates clean, human-readable alt attributes for images missing alt text in the Media Library based on cleaned file basenames.', 'omninox-site-toolkit' ),
 			),
 		);
 	}
@@ -45,15 +74,31 @@ class AccessibilityModule extends AbstractModule {
 	 * @return array|\WP_Error
 	 */
 	public function fix( $action, array $params = array() ) {
-		if ( 'fill_alt_filenames' === $action ) {
-			if ( ! \OmninoxSiteToolkit\License\FeatureGate::can_use( 'accessibility', 'fill_alt_filenames' ) ) {
-				return new \WP_Error(
-					'omninox_pro_required',
-					__( 'Auto-filling alt text from filenames requires Omninox Pro.', 'omninox-site-toolkit' ),
-					array( 'status' => 403 )
-				);
+		if ( 'a11y_remediation' === $action ) {
+			$settings = Settings::instance();
+			$before   = ! empty( $settings->get( 'optimizations.a11y_remediation' ) );
+			$enabled  = ! empty( $params['value'] );
+
+			$current_opts                     = (array) $settings->get( 'optimizations', array() );
+			$current_opts['a11y_remediation'] = $enabled;
+
+			$settings->update( array( 'optimizations' => $current_opts ) );
+
+			if ( $before !== $enabled ) {
+				ValueHistory::record( 'opt_a11y_remediation', $before, $enabled, 'a11y_remediation' );
 			}
 
+			return array(
+				'enabled'  => $enabled,
+				'previous' => $before ? __( 'on', 'omninox-site-toolkit' ) : __( 'off', 'omninox-site-toolkit' ),
+				'current'  => $enabled ? __( 'on', 'omninox-site-toolkit' ) : __( 'off', 'omninox-site-toolkit' ),
+				'message'  => $enabled
+					? __( 'Accessibility remediation active. Focus outlines, ARIA labels, and touch target rules are now applied.', 'omninox-site-toolkit' )
+					: __( 'Accessibility remediation disabled.', 'omninox-site-toolkit' ),
+			);
+		}
+
+		if ( 'fill_alt_filenames' === $action ) {
 			return $this->fill_alt_from_filenames();
 		}
 
@@ -98,10 +143,98 @@ class AccessibilityModule extends AbstractModule {
 			'updated' => $updated,
 			'message' => sprintf(
 				/* translators: %d: updated image count */
-				__( 'Generated and updated alt text for %d images.', 'omninox-site-toolkit'),
+				__( 'Generated and updated alt text for %d images in the Media Library.', 'omninox-site-toolkit' ),
 				$updated
 			),
 		);
+	}
+
+	/**
+	 * Inject high-contrast keyboard focus indicators and touch-target sizing CSS.
+	 */
+	public function inject_a11y_styles() {
+		echo '<style id="omninox-a11y-remediation">' .
+			':focus-visible { outline: 2px solid #2271b1 !important; outline-offset: 2px !important; } ' .
+			'.screen-reader-text.omninox-skip-link { position: absolute; left: -9999px; top: 0; background: #000; color: #fff; padding: 12px 16px; z-index: 999999; text-decoration: none; font-weight: 600; border-radius: 0 0 4px 0; } ' .
+			'.screen-reader-text.omninox-skip-link:focus { left: 0; top: 0; outline: 3px solid #ffba00; } ' .
+			'@media (max-width: 768px) { button, a.btn, a.button, input[type="submit"], input[type="button"] { min-height: 44px; min-width: 44px; display: inline-flex; align-items: center; justify-content: center; } } ' .
+			'</style>' . "\n";
+	}
+
+	/**
+	 * Inject skip-to-content landmark link.
+	 */
+	public function inject_skip_link() {
+		echo '<a class="screen-reader-text omninox-skip-link" href="#content">' . esc_html__( 'Skip to main content', 'omninox-site-toolkit' ) . '</a>' . "\n";
+	}
+
+	/**
+	 * Remediate front-end markup for accessible names and ARIA attributes.
+	 *
+	 * @param string $content Post content.
+	 * @return string
+	 */
+	public function remediate_markup( $content ) {
+		if ( empty( $content ) || is_feed() || is_admin() ) {
+			return $content;
+		}
+
+		// 1. Fix icon links with no text or aria-label.
+		$content = preg_replace_callback(
+			'/<a\b([^>]*)>(.*?)<\/a>/is',
+			function ( $m ) {
+				$attrs = $m[1];
+				$inner = $m[2];
+				$text  = trim( wp_strip_all_tags( $inner ) );
+
+				if ( '' === $text && false === stripos( $attrs, 'aria-label=' ) && false === stripos( $attrs, 'title=' ) ) {
+					// Derive accessible label from classes or URL.
+					$label = '';
+					if ( preg_match( '/\b(facebook|twitter|instagram|linkedin|youtube|pinterest|github|tiktok)\b/i', $attrs . ' ' . $inner, $match ) ) {
+						$label = ucfirst( strtolower( $match[1] ) );
+					} elseif ( preg_match( '/class=["\'][^"\']*\b(?:dashicons-|fa-|icon-)([\w-]+)/i', $inner, $match ) ) {
+						$label = ucwords( str_replace( '-', ' ', $match[1] ) );
+					} elseif ( preg_match( '/href=["\']([^"\']+)["\']/i', $attrs, $match ) ) {
+						$host  = wp_parse_url( $match[1], PHP_URL_HOST );
+						$label = $host ? str_replace( 'www.', '', $host ) : __( 'Link', 'omninox-site-toolkit' );
+					}
+
+					if ( $label ) {
+						return '<a' . $attrs . ' aria-label="' . esc_attr( $label ) . '">' . $inner . '</a>';
+					}
+				}
+
+				return $m[0];
+			},
+			$content
+		);
+
+		// 2. Fix buttons without accessible names.
+		$content = preg_replace_callback(
+			'/<button\b([^>]*)>(.*?)<\/button>/is',
+			function ( $m ) {
+				$attrs = $m[1];
+				$inner = $m[2];
+				$text  = trim( wp_strip_all_tags( $inner ) );
+
+				if ( '' === $text && false === stripos( $attrs, 'aria-label=' ) && false === stripos( $attrs, 'title=' ) ) {
+					$label = __( 'Action button', 'omninox-site-toolkit' );
+					if ( preg_match( '/\b(menu|nav|toggle|hamburger)\b/i', $attrs . ' ' . $inner ) ) {
+						$label = __( 'Toggle navigation', 'omninox-site-toolkit' );
+					} elseif ( preg_match( '/\b(search|find)\b/i', $attrs . ' ' . $inner ) ) {
+						$label = __( 'Search', 'omninox-site-toolkit' );
+					} elseif ( preg_match( '/\b(close|dismiss)\b/i', $attrs . ' ' . $inner ) ) {
+						$label = __( 'Close', 'omninox-site-toolkit' );
+					}
+					return '<button' . $attrs . ' aria-label="' . esc_attr( $label ) . '">' . $inner . '</button>';
+				}
+
+				return $m[0];
+			},
+			$content
+		);
+
+		return $content;
 	}
 
 	/**
@@ -118,7 +251,7 @@ class AccessibilityModule extends AbstractModule {
 			$this->add(
 				array(
 					'id'       => 'page_unreachable',
-					'label'    => __( 'Page could not be loaded', 'omninox-site-toolkit'),
+					'label'    => __( 'Page could not be loaded', 'omninox-site-toolkit' ),
 					'severity' => self::SEV_CRITICAL,
 					'value'    => $page->get_error_message(),
 					'weight'   => 5,
@@ -135,11 +268,11 @@ class AccessibilityModule extends AbstractModule {
 		$this->add(
 			array(
 				'id'          => 'html_lang',
-				'label'       => __( 'Page language declared', 'omninox-site-toolkit'),
-				'value'       => $has_lang ? __( 'Yes', 'omninox-site-toolkit') : __( 'No', 'omninox-site-toolkit'),
+				'label'       => __( 'Page language declared', 'omninox-site-toolkit' ),
+				'value'       => $has_lang ? __( 'Yes', 'omninox-site-toolkit' ) : __( 'No', 'omninox-site-toolkit' ),
 				'weight'      => 2,
 				'severity'    => $has_lang ? self::SEV_PASS : self::SEV_CRITICAL,
-				'description' => __( 'Screen readers use the lang attribute to choose a pronunciation model.', 'omninox-site-toolkit'),
+				'description' => __( 'Screen readers use the lang attribute to choose a pronunciation model.', 'omninox-site-toolkit' ),
 			)
 		);
 
@@ -161,13 +294,41 @@ class AccessibilityModule extends AbstractModule {
 		$this->add(
 			array(
 				'id'          => 'image_alt',
-				'label'       => __( 'Images with no alt attribute', 'omninox-site-toolkit'),
+				'label'       => __( 'Images with no alt attribute', 'omninox-site-toolkit' ),
 				'value'       => sprintf( '%d / %d', count( $offenders ), count( $images[0] ) ),
 				'expected'    => '0',
 				'weight'      => 3,
 				'severity'    => empty( $offenders ) ? self::SEV_PASS : self::SEV_CRITICAL,
-				'description' => __( 'Screen readers announce the filename instead of a description, and search engines lose the context.', 'omninox-site-toolkit'),
+				'description' => __( 'Screen readers announce the filename instead of a description, and search engines lose the context.', 'omninox-site-toolkit' ),
 				'context'     => array( 'elements' => array_slice( $offenders, 0, 40 ) ),
+				'fix'         => 'fill_alt_filenames',
+			)
+		);
+
+		// Buttons without accessible name.
+		preg_match_all( '/<button[^>]*>(.*?)<\/button>/is', $html, $buttons, PREG_SET_ORDER );
+		$empty_buttons = array();
+
+		foreach ( $buttons as $btn ) {
+			$text = trim( wp_strip_all_tags( $btn[1] ) );
+			if ( '' === $text && ! preg_match( '/aria-label(ledby)?=|title=/i', $btn[0] ) ) {
+				$row             = $this->locate( $html, $btn[0], $url );
+				$row['source']   = $this->attribute_source( $btn[0] );
+				$empty_buttons[] = $row;
+			}
+		}
+
+		$this->add(
+			array(
+				'id'          => 'button_accessible_names',
+				'label'       => __( 'Buttons without an accessible name', 'omninox-site-toolkit' ),
+				'value'       => (string) count( $empty_buttons ),
+				'expected'    => '0',
+				'weight'      => 3,
+				'severity'    => empty( $empty_buttons ) ? self::SEV_PASS : self::SEV_CRITICAL,
+				'description' => __( 'Icon-only buttons with no readable text or aria-label cannot be understood by screen reader users.', 'omninox-site-toolkit' ),
+				'context'     => array( 'elements' => array_slice( $empty_buttons, 0, 30 ) ),
+				'fix'         => 'a11y_remediation',
 			)
 		);
 
@@ -195,20 +356,21 @@ class AccessibilityModule extends AbstractModule {
 
 			$row           = $this->locate( $html, $tag, $url );
 			$row['source'] = $this->attribute_source( $tag );
-			$row['field']  = preg_match( '/name=["\']([^"\']+)["\']/i', $tag, $name ) ? $name[1] : __( 'unnamed', 'omninox-site-toolkit');
+			$row['field']  = preg_match( '/name=["\']([^"\']+)["\']/i', $tag, $name ) ? $name[1] : __( 'unnamed', 'omninox-site-toolkit' );
 			$unlabelled[]  = $row;
 		}
 
 		$this->add(
 			array(
 				'id'          => 'form_labels',
-				'label'       => __( 'Form fields without a label', 'omninox-site-toolkit'),
+				'label'       => __( 'Form fields without a label', 'omninox-site-toolkit' ),
 				'value'       => (string) count( $unlabelled ),
 				'expected'    => '0',
 				'weight'      => 3,
 				'severity'    => empty( $unlabelled ) ? self::SEV_PASS : self::SEV_CRITICAL,
-				'description' => __( 'A field with no label, aria-label or title is announced only as "edit text", so the person cannot tell what to type.', 'omninox-site-toolkit'),
+				'description' => __( 'A field with no label, aria-label or title is announced only as "edit text", so the person cannot tell what to type.', 'omninox-site-toolkit' ),
 				'context'     => array( 'elements' => array_slice( $unlabelled, 0, 40 ) ),
+				'fix'         => 'a11y_remediation',
 			)
 		);
 
@@ -232,19 +394,19 @@ class AccessibilityModule extends AbstractModule {
 		$this->add(
 			array(
 				'id'          => 'empty_links',
-				'label'       => __( 'Links with no readable text', 'omninox-site-toolkit'),
+				'label'       => __( 'Links with no readable text', 'omninox-site-toolkit' ),
 				'value'       => (string) count( $empty_links ),
 				'expected'    => '0',
 				'weight'      => 2.5,
 				'severity'    => empty( $empty_links ) ? self::SEV_PASS : self::SEV_WARNING,
-				'description' => __( 'Usually an icon link. Add an aria-label describing where it goes.', 'omninox-site-toolkit'),
+				'description' => __( 'Usually an icon link. Add an aria-label describing where it goes.', 'omninox-site-toolkit' ),
 				'context'     => array( 'elements' => array_slice( $empty_links, 0, 40 ) ),
+				'fix'         => 'a11y_remediation',
 			)
 		);
 
 		// Vague link text.
 		$vague = array();
-
 		foreach ( $links as $link ) {
 			$text = strtolower( trim( wp_strip_all_tags( $link[1] ) ) );
 
@@ -261,12 +423,12 @@ class AccessibilityModule extends AbstractModule {
 		$this->add(
 			array(
 				'id'          => 'vague_link_text',
-				'label'       => __( 'Links labelled "click here" or "read more"', 'omninox-site-toolkit'),
+				'label'       => __( 'Links labelled "click here" or "read more"', 'omninox-site-toolkit' ),
 				'value'       => (string) count( $vague ),
 				'weight'      => 1,
 				'severity'    => count( $vague ) < 3 ? self::SEV_PASS : self::SEV_NOTICE,
 				'context'     => array( 'elements' => array_slice( $vague, 0, 30 ) ),
-				'description' => __( 'Screen reader users often navigate by link list, where these labels carry no meaning.', 'omninox-site-toolkit'),
+				'description' => __( 'Screen reader users often navigate by link list, where these labels carry no meaning.', 'omninox-site-toolkit' ),
 			)
 		);
 
@@ -296,12 +458,12 @@ class AccessibilityModule extends AbstractModule {
 		$this->add(
 			array(
 				'id'          => 'heading_order',
-				'label'       => __( 'Skipped heading levels', 'omninox-site-toolkit'),
+				'label'       => __( 'Skipped heading levels', 'omninox-site-toolkit' ),
 				'value'       => (string) count( $skips ),
 				'expected'    => '0',
 				'weight'      => 2,
 				'severity'    => empty( $skips ) ? self::SEV_PASS : self::SEV_WARNING,
-				'description' => __( 'Jumping from H2 straight to H4 breaks the outline people use to navigate a long page.', 'omninox-site-toolkit'),
+				'description' => __( 'Jumping from H2 straight to H4 breaks the outline people use to navigate a long page.', 'omninox-site-toolkit' ),
 				'context'     => array( 'elements' => array_slice( $skips, 0, 30 ) ),
 			)
 		);
@@ -309,7 +471,7 @@ class AccessibilityModule extends AbstractModule {
 		$this->add(
 			array(
 				'id'       => 'single_h1',
-				'label'    => __( 'Exactly one H1 on the page', 'omninox-site-toolkit'),
+				'label'    => __( 'Exactly one H1 on the page', 'omninox-site-toolkit' ),
 				'value'    => (string) $h1_count,
 				'expected' => '1',
 				'weight'   => 2,
@@ -322,10 +484,10 @@ class AccessibilityModule extends AbstractModule {
 		$this->add(
 			array(
 				'id'       => 'main_landmark',
-				'label'    => __( 'Main landmark present', 'omninox-site-toolkit'),
-				'value'    => $has_main ? __( 'Yes', 'omninox-site-toolkit') : __( 'No', 'omninox-site-toolkit'),
-				'weight'   => 2,
-				'severity' => $has_main ? self::SEV_PASS : self::SEV_WARNING,
+				'label'    => __( 'Main landmark present', 'omninox-site-toolkit' ),
+				'value'    => $has_main ? __( 'Yes', 'omninox-site-toolkit' ) : __( 'No', 'omninox-site-toolkit' ),
+				'weight'      => 2,
+				'severity'    => $has_main ? self::SEV_PASS : self::SEV_WARNING,
 			)
 		);
 
@@ -333,10 +495,11 @@ class AccessibilityModule extends AbstractModule {
 		$this->add(
 			array(
 				'id'       => 'skip_link',
-				'label'    => __( 'Skip-to-content link', 'omninox-site-toolkit'),
-				'value'    => $has_skip ? __( 'Present', 'omninox-site-toolkit') : __( 'Missing', 'omninox-site-toolkit'),
+				'label'    => __( 'Skip-to-content link', 'omninox-site-toolkit' ),
+				'value'    => $has_skip ? __( 'Present', 'omninox-site-toolkit' ) : __( 'Missing', 'omninox-site-toolkit' ),
 				'weight'   => 1.5,
 				'severity' => $has_skip ? self::SEV_PASS : self::SEV_NOTICE,
+				'fix'      => 'a11y_remediation',
 			)
 		);
 
@@ -345,12 +508,12 @@ class AccessibilityModule extends AbstractModule {
 		$this->add(
 			array(
 				'id'          => 'positive_tabindex',
-				'label'       => __( 'Elements with a positive tabindex', 'omninox-site-toolkit'),
+				'label'       => __( 'Elements with a positive tabindex', 'omninox-site-toolkit' ),
 				'value'       => (string) $positive_tabindex,
 				'expected'    => '0',
 				'weight'      => 1.5,
 				'severity'    => 0 === $positive_tabindex ? self::SEV_PASS : self::SEV_WARNING,
-				'description' => __( 'A positive tabindex overrides the natural reading order and usually strands keyboard users.', 'omninox-site-toolkit'),
+				'description' => __( 'A positive tabindex overrides the natural reading order and usually strands keyboard users.', 'omninox-site-toolkit' ),
 			)
 		);
 
@@ -359,12 +522,12 @@ class AccessibilityModule extends AbstractModule {
 		$this->add(
 			array(
 				'id'          => 'contrast',
-				'label'       => __( 'Inline colour pairs below 4.5:1', 'omninox-site-toolkit'),
+				'label'       => __( 'Inline colour pairs below 4.5:1', 'omninox-site-toolkit' ),
 				'value'       => (string) count( $contrast ),
 				'weight'      => 2,
 				'severity'    => empty( $contrast ) ? self::SEV_PASS : self::SEV_WARNING,
 				'context'     => array( 'pairs' => array_slice( $contrast, 0, 20 ) ),
-				'description' => __( 'Only inline styles can be checked from the server. Run a browser audit for stylesheet-driven contrast.', 'omninox-site-toolkit'),
+				'description' => __( 'Only inline styles can be checked from the server. Run a browser audit for stylesheet-driven contrast.', 'omninox-site-toolkit' ),
 			)
 		);
 
@@ -373,7 +536,7 @@ class AccessibilityModule extends AbstractModule {
 		$this->add(
 			array(
 				'id'       => 'autoplay_media',
-				'label'    => __( 'Media that plays automatically', 'omninox-site-toolkit'),
+				'label'    => __( 'Media that plays automatically', 'omninox-site-toolkit' ),
 				'value'    => (string) $autoplay,
 				'expected' => '0',
 				'weight'   => 1.5,
@@ -384,10 +547,8 @@ class AccessibilityModule extends AbstractModule {
 		return $this->result( array( 'audited_url' => $url ) );
 	}
 
-
 	/**
-	 * Describe where a snippet sits in the document, so a finding points at a
-	 * specific element rather than just reporting a count.
+	 * Describe where a snippet sits in the document.
 	 *
 	 * @param string $html    Full document.
 	 * @param string $snippet Offending markup.
@@ -415,22 +576,21 @@ class AccessibilityModule extends AbstractModule {
 	 */
 	private function section_of( $html, $offset ) {
 		if ( false === $offset ) {
-			return __( 'unknown', 'omninox-site-toolkit');
+			return __( 'unknown', 'omninox-site-toolkit' );
 		}
 
 		$landmarks = array(
-			'<head'   => __( 'document head', 'omninox-site-toolkit'),
-			'<header' => __( 'header', 'omninox-site-toolkit'),
-			'<nav'    => __( 'navigation', 'omninox-site-toolkit'),
-			'<main'   => __( 'main content', 'omninox-site-toolkit'),
-			'<footer' => __( 'footer', 'omninox-site-toolkit'),
+			'<head'   => __( 'document head', 'omninox-site-toolkit' ),
+			'<header' => __( 'header', 'omninox-site-toolkit' ),
+			'<nav'    => __( 'navigation', 'omninox-site-toolkit' ),
+			'<main'   => __( 'main content', 'omninox-site-toolkit' ),
+			'<footer' => __( 'footer', 'omninox-site-toolkit' ),
 		);
 
-		$current = __( 'body', 'omninox-site-toolkit');
+		$current = __( 'body', 'omninox-site-toolkit' );
 
 		foreach ( $landmarks as $tag => $label ) {
 			$position = stripos( $html, $tag );
-
 			if ( false !== $position && $position < $offset ) {
 				$current = $label;
 			}
@@ -448,7 +608,6 @@ class AccessibilityModule extends AbstractModule {
 	 */
 	private function truncate( $snippet, $length = 180 ) {
 		$snippet = preg_replace( '/\s+/', ' ', trim( (string) $snippet ) );
-
 		return strlen( $snippet ) > $length ? substr( $snippet, 0, $length ) . '…' : $snippet;
 	}
 
@@ -478,7 +637,6 @@ class AccessibilityModule extends AbstractModule {
 		}
 
 		$theme = wp_get_theme();
-
 		return 'theme: ' . $theme->get( 'Name' );
 	}
 
@@ -512,7 +670,7 @@ class AccessibilityModule extends AbstractModule {
 					'element'    => $this->truncate( $styles[0][ $index ] ?? $style, 120 ),
 					'suggestion' => sprintf(
 						/* translators: %s: hex colour */
-						__( 'Darken the text to about %s to clear 4.5:1', 'omninox-site-toolkit'),
+						__( 'Darken the text to about %s to clear 4.5:1', 'omninox-site-toolkit' ),
 						$this->suggest_accessible_colour( $fg[1], $bg[1] )
 					),
 				);
@@ -536,8 +694,8 @@ class AccessibilityModule extends AbstractModule {
 			$hex = $hex[0] . $hex[0] . $hex[1] . $hex[1] . $hex[2] . $hex[2];
 		}
 
-		$channels  = array( hexdec( substr( $hex, 0, 2 ) ), hexdec( substr( $hex, 2, 2 ) ), hexdec( substr( $hex, 4, 2 ) ) );
-		$lighten   = $this->luminance( $background ) < 0.5;
+		$channels = array( hexdec( substr( $hex, 0, 2 ) ), hexdec( substr( $hex, 2, 2 ) ), hexdec( substr( $hex, 4, 2 ) ) );
+		$lighten  = $this->luminance( $background ) < 0.5;
 
 		for ( $step = 0; $step < 20; $step++ ) {
 			foreach ( $channels as $index => $value ) {

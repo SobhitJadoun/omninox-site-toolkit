@@ -9,6 +9,7 @@ namespace OmninoxSiteToolkit\Modules\Performance;
 
 use OmninoxSiteToolkit\Abstracts\AbstractModule;
 use OmninoxSiteToolkit\Core\Settings;
+use OmninoxSiteToolkit\Helpers\Utils;
 
 defined( 'ABSPATH' ) || exit;
 

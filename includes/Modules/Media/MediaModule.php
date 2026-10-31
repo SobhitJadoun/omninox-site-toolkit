@@ -22,28 +22,7 @@ class MediaModule extends AbstractModule {
 	protected $icon = 'format-image';
 
 	/**
-	 * The size the compressor aims for. Anything larger is compressed
-	 * toward this target by stepping quality down; anything already at
-	 * or under it is left alone.
-	 */
-	const TARGET_BYTES = 102400;
-
-	/**
-	 * The quality floor. The compressor never goes below this, whatever
-	 * the target: past this point compression artefacts become visible,
-	 * and a slightly-over-target image beats a visibly degraded one.
-	 */
-	const MIN_QUALITY = 60;
-
-	/**
-	 * Quality steps tried in order until the file fits the target.
-	 *
-	 * @var array
-	 */
-	const QUALITY_LADDER = array( 82, 76, 70, 65, 60 );
-
-	/**
-	 * Images wider than this are scaled down during compression.
+	 * Diagnostic width threshold only. Compression never resizes images.
 	 */
 	const MAX_WIDTH = 2560;
 
@@ -62,6 +41,7 @@ class MediaModule extends AbstractModule {
 	 * Serve converted copies (AVIF / WebP) to browsers that support them.
 	 */
 	public function register() {
+		\OmninoxSiteToolkit\Modules\Media\Compression\CompressionJobs::register();
 		add_filter( 'wp_get_attachment_image_src', array( $this, 'filter_image_src' ), 20 );
 		add_filter( 'wp_calculate_image_srcset', array( $this, 'filter_srcset' ), 20 );
 		add_filter( 'wp_content_img_tag', array( $this, 'filter_content_img_tag' ), 20 );
@@ -125,6 +105,8 @@ class MediaModule extends AbstractModule {
 		}
 
 		$compressed = (array) get_post_meta( $id, '_omninox_compressed', true );
+		$original_compression = (array) get_post_meta( $id, '_omninox_original_compression', true );
+		if ( $original_compression ) { $compressed = $original_compression; }
 
 		if ( ! empty( $compressed['before'] ) && empty( $compressed['skipped'] ) ) {
 			$lines[] = sprintf(
@@ -218,10 +200,9 @@ class MediaModule extends AbstractModule {
 				'notice' => __( 'Originals are kept untouched. AVIF copies offer smaller file sizes and are served to compatible browsers.', 'omninox-site-toolkit'),
 			),
 			array(
-				'id'      => 'bulk_compress',
-				'label'   => __( 'Compress originals toward 100 KB', 'omninox-site-toolkit'),
-				'type'    => 'batch',
-				'confirm' => __( 'This rewrites the original image files (JPEG, PNG, GIF, WebP and AVIF), stepping quality down until each fits under 100 KB or the quality floor is reached — whichever comes first, so nothing is visibly degraded. A backup copy is kept in the plugin storage directory for every file it touches, and any existing converted copies are regenerated from the new files. Continue?', 'omninox-site-toolkit' ),
+				'id' => 'bulk_compress',
+				'label' => __( 'Original Image Compression', 'omninox-site-toolkit' ),
+				'type' => 'original_compression',
 			),
 			array(
 				'id'      => 'set_webp_scope',
@@ -273,7 +254,7 @@ class MediaModule extends AbstractModule {
 			),
 			array( 'id' => 'reset_status', 'label' => __( 'Clear processed markers and re-examine', 'omninox-site-toolkit'), 'type' => 'button' ),
 			array( 'id' => 'fix_missing_alt', 'label' => __( 'Fill alt text from filenames', 'omninox-site-toolkit'), 'type' => 'button' ),
-			array( 'id' => 'restore_originals', 'label' => __( 'Restore compressed images from backups', 'omninox-site-toolkit'), 'type' => 'button' ),
+			array( 'id' => 'restore_originals', 'label' => __( 'Restore legacy compression backups (older jobs)', 'omninox-site-toolkit'), 'type' => 'button' ),
 			array(
 				'id'     => 'restore_replaced_originals',
 				'label'  => __( 'Undo format replacement (bring originals back)', 'omninox-site-toolkit'),
@@ -515,6 +496,9 @@ class MediaModule extends AbstractModule {
 	 * @return array|\WP_Error
 	 */
 	public function fix( $action, array $params = array() ) {
+		if ( 'bulk_compress' === $action || 0 === strpos( $action, 'compression_' ) ) {
+			return \OmninoxSiteToolkit\Modules\Media\Compression\CompressionJobs::dispatch( $action, $params );
+		}
 		$this->selection = array_map( 'absint', (array) ( $params['ids'] ?? array() ) );
 
 		switch ( $action ) {
@@ -533,9 +517,6 @@ class MediaModule extends AbstractModule {
 					return new \WP_Error( 'omninox_pro_required', __( 'AVIF conversion requires Omninox Pro.', 'omninox-site-toolkit' ), array( 'status' => 403 ) );
 				}
 				return $this->batch_convert( absint( $params['offset'] ?? 0 ), absint( $params['batch'] ?? 10 ), $format );
-
-			case 'bulk_compress':
-				return $this->batch_compress( absint( $params['offset'] ?? 0 ), absint( $params['batch'] ?? 10 ), absint( $params['quality'] ?? 82 ) );
 
 			case 'regenerate_thumbnails':
 				return $this->batch_regenerate( absint( $params['offset'] ?? 0 ), absint( $params['batch'] ?? 10 ) );
@@ -865,6 +846,8 @@ class MediaModule extends AbstractModule {
 			$webp = (array) get_post_meta( $id, '_omninox_webp', true );
 			$avif = (array) get_post_meta( $id, '_omninox_avif', true );
 			$comp = (array) get_post_meta( $id, '_omninox_compressed', true );
+			$original_compression = (array) get_post_meta( $id, '_omninox_original_compression', true );
+			if ( $original_compression ) { $comp = $original_compression; }
 
 			$converted_webp = ! empty( $webp['files'] );
 			$converted_avif = ! empty( $avif['files'] );
@@ -933,16 +916,8 @@ class MediaModule extends AbstractModule {
 
 		foreach ( $ids as $id ) {
 			delete_post_meta( $id, '_omninox_compressed' );
-
-			$webp = (array) get_post_meta( $id, '_omninox_webp', true );
-			if ( ! empty( $webp['skipped'] ) ) {
-				delete_post_meta( $id, '_omninox_webp' );
-			}
-
-			$avif = (array) get_post_meta( $id, '_omninox_avif', true );
-			if ( ! empty( $avif['skipped'] ) ) {
-				delete_post_meta( $id, '_omninox_avif' );
-			}
+			delete_post_meta( $id, '_omninox_webp' );
+			delete_post_meta( $id, '_omninox_avif' );
 		}
 
 		return array(
@@ -1012,12 +987,18 @@ class MediaModule extends AbstractModule {
 				$dest = ( 'avif' === $fmt ) ? $this->avif_path( $path ) : $this->webp_path( $path );
 
 				if ( file_exists( $dest ) ) {
-					if ( filemtime( $dest ) >= filemtime( $path ) ) {
+					// Validate existing converted file. If corrupt, remove and regenerate fresh.
+					if ( ! $this->is_valid_converted_image( $dest, $fmt ) ) {
+						@unlink( $dest ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
+					} elseif ( filemtime( $dest ) >= filemtime( $path ) ) {
+						if ( 'webp' === $fmt ) {
+							$this->fix_webp_odd_padding( $dest );
+						}
 						$converted_files[] = $this->relative( $dest, $uploads['basedir'] );
 						continue;
+					} else {
+						@unlink( $dest ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
 					}
-
-					@unlink( $dest ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
 				}
 
 				$result = ( 'avif' === $fmt )
@@ -1034,8 +1015,8 @@ class MediaModule extends AbstractModule {
 				$before = filesize( $path );
 				$after  = file_exists( $dest ) ? filesize( $dest ) : 0;
 
-				// A converted copy that is not smaller is worse than the original.
-				if ( ! $after || $after >= $before ) {
+				// Verify the converted file is intact, valid and smaller than the original.
+				if ( ! $after || ! $this->is_valid_converted_image( $dest, $fmt ) || $after >= $before ) {
 					@unlink( $dest ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
 					continue;
 				}
@@ -1179,242 +1160,6 @@ class MediaModule extends AbstractModule {
 	}
 
 	/* -------------------------------------------------------------- Compress */
-
-	/**
-	 * Compress originals toward the size target, keeping a restorable
-	 * backup, and refresh converted copies.
-	 *
-	 * @param int $offset  Offset.
-	 * @param int $batch   Batch size.
-	 * @param int $quality Starting quality.
-	 * @return array
-	 */
-	private function batch_compress( $offset, $batch, $quality ) {
-		$batch     = max( 1, min( 25, $batch ) );
-		$quality   = max( self::MIN_QUALITY, min( 95, $quality ) );
-		$selection = array_map( 'absint', (array) ( $this->selection ?? array() ) );
-		$ids       = $this->convertible_ids( $offset, $batch, '_omninox_compressed', $selection, true );
-
-		$compressed  = 0;
-		$reconverted = 0;
-		$hit_target  = 0;
-		$skipped     = 0;
-		$failed      = 0;
-		$saved       = 0;
-		$errors      = array();
-
-		foreach ( $ids as $id ) {
-			$path = get_attached_file( $id );
-
-			if ( ! $path || ! file_exists( $path ) ) {
-				++$skipped;
-				continue;
-			}
-
-			clearstatcache( true, $path );
-			$before = filesize( $path );
-
-			if ( $before <= self::TARGET_BYTES ) {
-				update_post_meta( $id, '_omninox_compressed', array( 'before' => $before, 'after' => $before, 'at' => current_time( 'mysql' ), 'skipped' => 'under target' ) );
-				++$skipped;
-				continue;
-			}
-
-			$mime = $this->mime_of( $path );
-
-			if ( ! in_array( $mime, array( 'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/avif' ), true ) ) {
-				update_post_meta( $id, '_omninox_compressed', array( 'before' => $before, 'after' => $before, 'at' => current_time( 'mysql' ), 'skipped' => 'unsupported type' ) );
-				++$skipped;
-				continue;
-			}
-
-			$backup = $this->get_media_backup_path( $id, $path );
-
-			if ( ! file_exists( $backup ) && ! @copy( $path, $backup ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors
-				++$failed;
-
-				if ( count( $errors ) < 5 ) {
-					$errors[] = array( 'id' => $id, 'error' => __( 'The plugin backup folder inside uploads is not writable, so no backup could be made. The file was left untouched.', 'omninox-site-toolkit' ) );
-				}
-
-				continue;
-			}
-
-			$attempt = $this->compress_to_target( $path, $mime, $before, $quality );
-
-			if ( is_wp_error( $attempt ) ) {
-				++$failed;
-
-				if ( count( $errors ) < 5 ) {
-					$errors[] = array( 'id' => $id, 'error' => $attempt->get_error_message() );
-				}
-
-				continue;
-			}
-
-			if ( empty( $attempt['path'] ) ) {
-				update_post_meta( $id, '_omninox_compressed', array( 'before' => $before, 'after' => $before, 'at' => current_time( 'mysql' ), 'skipped' => 'already optimal' ) );
-				++$skipped;
-				continue;
-			}
-
-			if ( ! @rename( $attempt['path'], $path ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors
-				@unlink( $attempt['path'] ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
-				++$failed;
-				continue;
-			}
-
-			clearstatcache( true, $path );
-			$after  = filesize( $path );
-			$saved += max( 0, $before - $after );
-			++$compressed;
-
-			if ( $after <= self::TARGET_BYTES ) {
-				++$hit_target;
-			}
-
-			update_post_meta(
-				$id,
-				'_omninox_compressed',
-				array(
-					'before'  => $before,
-					'after'   => $after,
-					'quality' => $attempt['quality'],
-					'target'  => $after <= self::TARGET_BYTES ? 'reached' : 'floor reached first',
-					'at'      => current_time( 'mysql' ),
-				)
-			);
-
-			if ( $this->regenerate_converted_after_change( $id ) ) {
-				++$reconverted;
-			}
-		}
-
-		$processed = $offset + count( $ids );
-		$pending   = $this->pending_count( '_omninox_compressed', true );
-		$progress  = $this->progress();
-
-		if ( $failed && ! $compressed ) {
-			$message = sprintf(
-				/* translators: %s: error message */
-				__( 'Nothing was compressed. The first error was: %s', 'omninox-site-toolkit'),
-				$errors ? $errors[0]['error'] : __( 'unknown', 'omninox-site-toolkit')
-			);
-		} elseif ( ! $compressed && $skipped ) {
-			$message = sprintf(
-				/* translators: %s: size target */
-				__( 'Nothing to do in this batch: those files are already at or under %s, or cannot shrink further without visible quality loss.', 'omninox-site-toolkit'),
-				size_format( self::TARGET_BYTES )
-			);
-		} else {
-			$message = sprintf(
-				/* translators: 1: number compressed, 2: number that reached target, 3: size target, 4: saved bytes, 5: refreshed copies */
-				__( 'Compressed %1$d images (%2$d now at or under %3$s), saving %4$s. Refreshed converted copies of %5$d of them.', 'omninox-site-toolkit'),
-				$compressed,
-				$hit_target,
-				size_format( self::TARGET_BYTES ),
-				Utils::format_bytes( $saved ),
-				$reconverted
-			);
-		}
-
-		return array(
-			'compressed'  => $compressed,
-			'hit_target'  => $hit_target,
-			'reconverted' => $reconverted,
-			'skipped'     => $skipped,
-			'failed'      => $failed,
-			'errors'      => $errors,
-			'offset'      => $processed,
-			'total'       => $progress['images'],
-			'remaining'   => $pending,
-			'done'        => empty( $ids ) || ! empty( $selection ),
-			'saved'       => Utils::format_bytes( $saved ),
-			'message'     => $message,
-		);
-	}
-
-	/**
-	 * Re-encode one file at descending qualities until it fits the target or floor.
-	 *
-	 * @param string $path    Source path.
-	 * @param string $mime    Detected mime type.
-	 * @param int    $before  Original size in bytes.
-	 * @param int    $start_q Top of the quality ladder.
-	 * @return array|\WP_Error
-	 */
-	private function compress_to_target( $path, $mime, $before, $start_q ) {
-		$best_path    = '';
-		$best_size    = $before;
-		$best_quality = 0;
-
-		$ladder = array_values(
-			array_filter(
-				self::QUALITY_LADDER,
-				static function ( $step ) use ( $start_q ) {
-					return $step <= $start_q;
-				}
-			)
-		);
-
-		if ( empty( $ladder ) ) {
-			$ladder = array( max( self::MIN_QUALITY, $start_q ) );
-		}
-
-		foreach ( $ladder as $step ) {
-			$editor = wp_get_image_editor( $path );
-
-			if ( is_wp_error( $editor ) ) {
-				return $editor;
-			}
-
-			$editor->set_quality( $step );
-
-			$temp   = $path . '.omninox-q' . $step;
-			$result = $editor->save( $temp, $mime );
-
-			if ( is_wp_error( $result ) ) {
-				@unlink( $temp ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
-
-				if ( $best_path ) {
-					break;
-				}
-
-				return $result;
-			}
-
-			$written = isset( $result['path'] ) ? $result['path'] : $temp;
-
-			clearstatcache( true, $written );
-			$size = file_exists( $written ) ? filesize( $written ) : 0;
-
-			if ( $size && $size < $best_size ) {
-				if ( $best_path && $best_path !== $written ) {
-					@unlink( $best_path ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
-				}
-
-				$best_path    = $written;
-				$best_size    = $size;
-				$best_quality = $step;
-
-				if ( $size <= self::TARGET_BYTES ) {
-					break;
-				}
-			} else {
-				@unlink( $written ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
-
-				if ( in_array( $mime, array( 'image/png', 'image/gif' ), true ) ) {
-					break;
-				}
-			}
-		}
-
-		return array(
-			'path'    => $best_path,
-			'quality' => $best_quality,
-			'size'    => $best_size,
-		);
-	}
 
 	/**
 	 * Refresh converted copies after a source file changes.
@@ -1861,8 +1606,12 @@ class MediaModule extends AbstractModule {
 						continue;
 					}
 
-					// Verify both files actually exist on disk right now
-					if ( file_exists( $basedir . $candidate_rel ) && file_exists( $basedir . $conv_relative ) ) {
+					// Verify both files actually exist on disk and converted file is valid
+					$conv_full = $basedir . $conv_relative;
+					if ( file_exists( $basedir . $candidate_rel ) && file_exists( $conv_full ) && $this->is_valid_converted_image( $conv_full, $format ) ) {
+						if ( 'webp' === $format ) {
+							$this->fix_webp_odd_padding( $conv_full );
+						}
 						$pair = array(
 							'attachment_id' => $att_id,
 							'size_key'      => $candidate['key'],
@@ -2518,7 +2267,7 @@ class MediaModule extends AbstractModule {
 		// Check AVIF first for superior compression.
 		if ( $this->browser_accepts_format( 'avif' ) ) {
 			$avif = $this->avif_path( $path );
-			if ( file_exists( $avif ) ) {
+			if ( file_exists( $avif ) && $this->is_valid_converted_image( $avif, 'avif' ) ) {
 				return str_replace( $uploads['basedir'], $uploads['baseurl'], $avif );
 			}
 		}
@@ -2527,7 +2276,10 @@ class MediaModule extends AbstractModule {
 		if ( $this->browser_accepts_format( 'webp' ) ) {
 			$webp = $this->webp_path( $path );
 			if ( file_exists( $webp ) ) {
-				return str_replace( $uploads['basedir'], $uploads['baseurl'], $webp );
+				$this->fix_webp_odd_padding( $webp );
+				if ( $this->is_valid_converted_image( $webp, 'webp' ) ) {
+					return str_replace( $uploads['basedir'], $uploads['baseurl'], $webp );
+				}
 			}
 		}
 
@@ -2691,7 +2443,84 @@ class MediaModule extends AbstractModule {
 	}
 
 	/**
-	 * Write a WebP copy of a source image.
+	 * Verify that a generated image file exists, is non-empty, and decodes properly.
+	 *
+	 * @param string $file   File path.
+	 * @param string $format Expected format: webp|avif.
+	 * @return bool
+	 */
+	private function is_valid_converted_image( $file, $format = 'webp' ) {
+		if ( ! file_exists( $file ) ) {
+			return false;
+		}
+
+		$size = @filesize( $file );
+		if ( false === $size || $size < 128 ) {
+			return false;
+		}
+
+		// WebP RIFF container verification.
+		if ( 'webp' === $format ) {
+			$handle = @fopen( $file, 'rb' );
+			if ( ! $handle ) {
+				return false;
+			}
+			$header = fread( $handle, 16 );
+			fclose( $handle );
+
+			if ( strlen( $header ) < 12 ) {
+				return false;
+			}
+			if ( 0 !== substr_compare( $header, 'RIFF', 0, 4 ) || 0 !== substr_compare( $header, 'WEBP', 8, 4 ) ) {
+				return false;
+			}
+		}
+
+		// Verify that PHP can read the image dimensions and valid mime type.
+		$info = @getimagesize( $file );
+		if ( empty( $info ) || empty( $info[0] ) || empty( $info[1] ) ) {
+			return false;
+		}
+
+		$expected_mime = 'image/' . $format;
+		if ( ! empty( $info['mime'] ) && $info['mime'] !== $expected_mime ) {
+			return false;
+		}
+
+		return true;
+	}
+
+	/**
+	 * Fix PHP GD libgd odd-dimension / odd-byte WebP padding omission (PHP Bug #66590).
+	 *
+	 * According to the RIFF / WebP specification, any chunk with an odd byte count
+	 * must include a single null padding byte (\0) so chunk lengths are even.
+	 * Without this, Chrome/Firefox fail to decode the final macroblock, causing
+	 * half-blank images or horizontal glitch lines at the bottom.
+	 *
+	 * @param string $file WebP file path.
+	 * @return void
+	 */
+	private function fix_webp_odd_padding( $file ) {
+		if ( ! file_exists( $file ) ) {
+			return;
+		}
+
+		clearstatcache( true, $file );
+		$size = @filesize( $file );
+		if ( false !== $size && $size > 0 && 1 === ( $size % 2 ) ) {
+			@file_put_contents( $file, "\0", FILE_APPEND ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
+			clearstatcache( true, $file );
+		}
+	}
+
+	/**
+	 * Write a clean, high-fidelity WebP copy of a source image without corrupt scanlines.
+	 *
+	 * Uses a multi-tiered pipeline:
+	 * 1. WordPress Core WP_Image_Editor (handles color profile conversion, EXIF rotation & native WebP)
+	 * 2. Hardened Imagick (with CMYK -> sRGB colorspace transformation, layer flattening, EXIF auto-orientation)
+	 * 3. Hardened GD (with non-destructive truecolor alpha compositing and RIFF odd-byte padding correction)
 	 *
 	 * @param string $source Source path.
 	 * @param string $target Target path.
@@ -2701,47 +2530,106 @@ class MediaModule extends AbstractModule {
 		if ( ! is_writable( dirname( $target ) ) ) {
 			return new \WP_Error(
 				'omninox_not_writable',
-				/* translators: %s: directory path */
-				sprintf( __( 'The folder %s is not writable.', 'omninox-site-toolkit'), dirname( $target ) )
+				sprintf( __( 'The folder %s is not writable.', 'omninox-site-toolkit' ), dirname( $target ) )
 			);
 		}
 
-		$mime          = $this->mime_of( $source );
-		$imagick_error = '';
+		if ( function_exists( 'wp_raise_memory_limit' ) ) {
+			wp_raise_memory_limit( 'image' );
+		}
 
+		$mime = $this->mime_of( $source );
+
+		// -------------------------------------------------------------
+		// Tier 1: WordPress Core Image Editor (Most reliable in WP 5.8+)
+		// -------------------------------------------------------------
+		if ( function_exists( 'wp_get_image_editor' ) ) {
+			$editor = wp_get_image_editor( $source );
+			if ( ! is_wp_error( $editor ) && method_exists( $editor, 'supports_mime_type' ) && $editor->supports_mime_type( 'image/webp' ) ) {
+				$editor->set_quality( 82 );
+				$saved = $editor->save( $target, 'image/webp' );
+				if ( ! is_wp_error( $saved ) ) {
+					$this->fix_webp_odd_padding( $target );
+					if ( $this->is_valid_converted_image( $target, 'webp' ) ) {
+						return true;
+					}
+					@unlink( $target ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
+				}
+			}
+		}
+
+		// -------------------------------------------------------------
+		// Tier 2: Hardened Imagick
+		// -------------------------------------------------------------
+		$imagick_error = '';
 		if ( class_exists( 'Imagick' ) ) {
 			try {
 				$image = new \Imagick();
 				$image->readImage( $source );
-				$image->setImageFormat( 'webp' );
-				$image->setImageCompressionQuality( 82 );
 
-				if ( 'image/png' === $mime ) {
-					$image->setImageAlphaChannel( \Imagick::ALPHACHANNEL_ACTIVATE );
-					$image->setBackgroundColor( new \ImagickPixel( 'transparent' ) );
+				// Multi-frame/multi-layer flattening (prevents partial layer rendering)
+				if ( $image->getNumberImages() > 1 ) {
+					$image = $image->coalesceImages();
+					$first = $image->getImage();
+					$image->clear();
+					$image->destroy();
+					$image = $first;
 				}
 
+				// Auto-orient based on EXIF before stripping metadata
+				if ( method_exists( $image, 'autoOrient' ) ) {
+					$image->autoOrient();
+				}
+
+				// Color Space Normalization:
+				// WebP strictly requires sRGB. CMYK/YCbCr causes corrupt macroblocks,
+				// horizontal lines, and half-blank renders in Chromium/Safari.
+				$cs = $image->getImageColorspace();
+				if ( \Imagick::COLORSPACE_CMYK === $cs || \Imagick::COLORSPACE_YCBCR === $cs ) {
+					$image->transformImageColorspace( \Imagick::COLORSPACE_SRGB );
+				}
+
+				// Alpha / Transparency Preservation
+				if ( in_array( $mime, array( 'image/png', 'image/gif' ), true ) ) {
+					$image->setImageBackgroundColor( new \ImagickPixel( 'transparent' ) );
+				} elseif ( 'image/jpeg' === $mime ) {
+					$image->setImageAlphaChannel( \Imagick::ALPHACHANNEL_REMOVE );
+				}
+
+				$image->setImageFormat( 'webp' );
+				$image->setImageCompressionQuality( 82 );
+				$image->setOption( 'webp:method', '4' );
 				$image->stripImage();
+
 				$written = $image->writeImage( $target );
 				$image->clear();
 				$image->destroy();
 
 				if ( $written ) {
-					return true;
+					$this->fix_webp_odd_padding( $target );
+					if ( $this->is_valid_converted_image( $target, 'webp' ) ) {
+						return true;
+					}
+					@unlink( $target ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
 				}
 			} catch ( \Exception $e ) {
 				$imagick_error = $e->getMessage();
 			}
 		}
 
+		// -------------------------------------------------------------
+		// Tier 3: Hardened GD Engine
+		// -------------------------------------------------------------
 		if ( ! function_exists( 'imagewebp' ) ) {
 			return new \WP_Error(
 				'omninox_no_webp',
 				$imagick_error
-					? sprintf( /* translators: %s: error message */ __( 'Imagick failed (%s) and GD has no WebP support.', 'omninox-site-toolkit'), $imagick_error )
-					: __( 'GD was compiled without WebP support on this server.', 'omninox-site-toolkit')
+					? sprintf( __( 'Imagick failed (%s) and GD has no WebP support.', 'omninox-site-toolkit' ), $imagick_error )
+					: __( 'GD was compiled without WebP support on this server.', 'omninox-site-toolkit' )
 			);
 		}
+
+		@ini_set( 'gd.jpeg_ignore_warning', 1 ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
 
 		if ( 'image/png' === $mime ) {
 			$image = @imagecreatefrompng( $source ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
@@ -2750,24 +2638,47 @@ class MediaModule extends AbstractModule {
 		} elseif ( 'image/gif' === $mime ) {
 			$image = @imagecreatefromgif( $source ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
 		} else {
-			return new \WP_Error( 'omninox_unsupported_type', __( 'Only JPEG, PNG and GIF files can be converted.', 'omninox-site-toolkit') );
+			return new \WP_Error( 'omninox_unsupported_type', __( 'Only JPEG, PNG and GIF files can be converted.', 'omninox-site-toolkit' ) );
 		}
 
 		if ( ! $image ) {
-			return new \WP_Error( 'omninox_read_failed', __( 'The image could not be read.', 'omninox-site-toolkit') );
+			return new \WP_Error( 'omninox_read_failed', __( 'The image could not be read.', 'omninox-site-toolkit' ) );
 		}
 
+		$width  = imagesx( $image );
+		$height = imagesy( $image );
+
+		// Clean Truecolor Alpha Canvas:
+		// imagealphablending must be FALSE so pixels are NOT blended against black (#000000).
 		if ( in_array( $mime, array( 'image/png', 'image/gif' ), true ) ) {
-			imagepalettetotruecolor( $image );
-			imagealphablending( $image, true );
-			imagesavealpha( $image, true );
+			$canvas = imagecreatetruecolor( $width, $height );
+			imagealphablending( $canvas, false );
+			imagesavealpha( $canvas, true );
+			$transparent = imagecolorallocatealpha( $canvas, 255, 255, 255, 127 );
+			imagefilledrectangle( $canvas, 0, 0, $width, $height, $transparent );
+			imagecopy( $canvas, $image, 0, 0, 0, 0, $width, $height );
+			imagedestroy( $image );
+			$image = $canvas;
+		} else {
+			if ( ! imageistruecolor( $image ) ) {
+				imagepalettetotruecolor( $image );
+			}
 		}
 
-		$ok = imagewebp( $image, $target, 82 );
+		$ok = @imagewebp( $image, $target, 82 ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
 		imagedestroy( $image );
 
-		if ( ! $ok ) {
-			return new \WP_Error( 'omninox_write_failed', __( 'The WebP copy could not be written.', 'omninox-site-toolkit') );
+		if ( ! $ok || ! file_exists( $target ) ) {
+			@unlink( $target ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
+			return new \WP_Error( 'omninox_write_failed', __( 'The WebP copy could not be written.', 'omninox-site-toolkit' ) );
+		}
+
+		// Apply the odd-byte padding patch
+		$this->fix_webp_odd_padding( $target );
+
+		if ( ! $this->is_valid_converted_image( $target, 'webp' ) ) {
+			@unlink( $target ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
+			return new \WP_Error( 'omninox_webp_corrupt', __( 'Generated WebP image failed integrity verification.', 'omninox-site-toolkit' ) );
 		}
 
 		return true;
@@ -2784,50 +2695,91 @@ class MediaModule extends AbstractModule {
 		if ( ! is_writable( dirname( $target ) ) ) {
 			return new \WP_Error(
 				'omninox_not_writable',
-				/* translators: %s: directory path */
-				sprintf( __( 'The folder %s is not writable.', 'omninox-site-toolkit'), dirname( $target ) )
+				sprintf( __( 'The folder %s is not writable.', 'omninox-site-toolkit' ), dirname( $target ) )
 			);
 		}
 
-		$mime          = $this->mime_of( $source );
+		if ( function_exists( 'wp_raise_memory_limit' ) ) {
+			wp_raise_memory_limit( 'image' );
+		}
+
+		$mime = $this->mime_of( $source );
+
+		// Tier 1: WP_Image_Editor if available and supports AVIF
+		if ( function_exists( 'wp_get_image_editor' ) ) {
+			$editor = wp_get_image_editor( $source );
+			if ( ! is_wp_error( $editor ) && method_exists( $editor, 'supports_mime_type' ) && $editor->supports_mime_type( 'image/avif' ) ) {
+				$editor->set_quality( 75 );
+				$saved = $editor->save( $target, 'image/avif' );
+				if ( ! is_wp_error( $saved ) && $this->is_valid_converted_image( $target, 'avif' ) ) {
+					return true;
+				}
+				@unlink( $target ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
+			}
+		}
+
 		$imagick_error = '';
 
+		// Tier 2: Imagick with AVIF support
 		if ( class_exists( 'Imagick' ) ) {
 			try {
 				$formats = array_map( 'strtoupper', (array) \Imagick::queryFormats() );
 				if ( in_array( 'AVIF', $formats, true ) ) {
 					$image = new \Imagick();
 					$image->readImage( $source );
-					$image->setImageFormat( 'avif' );
-					$image->setImageCompressionQuality( 75 );
 
-					if ( 'image/png' === $mime ) {
-						$image->setImageAlphaChannel( \Imagick::ALPHACHANNEL_ACTIVATE );
-						$image->setBackgroundColor( new \ImagickPixel( 'transparent' ) );
+					if ( $image->getNumberImages() > 1 ) {
+						$image = $image->coalesceImages();
+						$first = $image->getImage();
+						$image->clear();
+						$image->destroy();
+						$image = $first;
 					}
 
+					if ( method_exists( $image, 'autoOrient' ) ) {
+						$image->autoOrient();
+					}
+
+					$cs = $image->getImageColorspace();
+					if ( \Imagick::COLORSPACE_CMYK === $cs || \Imagick::COLORSPACE_YCBCR === $cs ) {
+						$image->transformImageColorspace( \Imagick::COLORSPACE_SRGB );
+					}
+
+					if ( in_array( $mime, array( 'image/png', 'image/gif' ), true ) ) {
+						$image->setImageBackgroundColor( new \ImagickPixel( 'transparent' ) );
+					} elseif ( 'image/jpeg' === $mime ) {
+						$image->setImageAlphaChannel( \Imagick::ALPHACHANNEL_REMOVE );
+					}
+
+					$image->setImageFormat( 'avif' );
+					$image->setImageCompressionQuality( 75 );
 					$image->stripImage();
+
 					$written = $image->writeImage( $target );
 					$image->clear();
 					$image->destroy();
 
-					if ( $written ) {
+					if ( $written && $this->is_valid_converted_image( $target, 'avif' ) ) {
 						return true;
 					}
+					@unlink( $target ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
 				}
 			} catch ( \Exception $e ) {
 				$imagick_error = $e->getMessage();
 			}
 		}
 
+		// Tier 3: GD imageavif
 		if ( ! function_exists( 'imageavif' ) ) {
 			return new \WP_Error(
 				'omninox_no_avif',
 				$imagick_error
-					? sprintf( /* translators: %s: error message */ __( 'Imagick failed (%s) and GD has no AVIF support.', 'omninox-site-toolkit'), $imagick_error )
-					: __( 'GD was compiled without AVIF support on this server.', 'omninox-site-toolkit')
+					? sprintf( __( 'Imagick failed (%s) and GD has no AVIF support.', 'omninox-site-toolkit' ), $imagick_error )
+					: __( 'GD was compiled without AVIF support on this server.', 'omninox-site-toolkit' )
 			);
 		}
+
+		@ini_set( 'gd.jpeg_ignore_warning', 1 ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
 
 		if ( 'image/png' === $mime ) {
 			$image = @imagecreatefrompng( $source ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
@@ -2836,24 +2788,37 @@ class MediaModule extends AbstractModule {
 		} elseif ( 'image/gif' === $mime ) {
 			$image = @imagecreatefromgif( $source ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
 		} else {
-			return new \WP_Error( 'omninox_unsupported_type', __( 'Only JPEG, PNG and GIF files can be converted.', 'omninox-site-toolkit') );
+			return new \WP_Error( 'omninox_unsupported_type', __( 'Only JPEG, PNG and GIF files can be converted.', 'omninox-site-toolkit' ) );
 		}
 
 		if ( ! $image ) {
-			return new \WP_Error( 'omninox_read_failed', __( 'The image could not be read.', 'omninox-site-toolkit') );
+			return new \WP_Error( 'omninox_read_failed', __( 'The image could not be read.', 'omninox-site-toolkit' ) );
 		}
+
+		$width  = imagesx( $image );
+		$height = imagesy( $image );
 
 		if ( in_array( $mime, array( 'image/png', 'image/gif' ), true ) ) {
-			imagepalettetotruecolor( $image );
-			imagealphablending( $image, true );
-			imagesavealpha( $image, true );
+			$canvas = imagecreatetruecolor( $width, $height );
+			imagealphablending( $canvas, false );
+			imagesavealpha( $canvas, true );
+			$transparent = imagecolorallocatealpha( $canvas, 255, 255, 255, 127 );
+			imagefilledrectangle( $canvas, 0, 0, $width, $height, $transparent );
+			imagecopy( $canvas, $image, 0, 0, 0, 0, $width, $height );
+			imagedestroy( $image );
+			$image = $canvas;
+		} else {
+			if ( ! imageistruecolor( $image ) ) {
+				imagepalettetotruecolor( $image );
+			}
 		}
 
-		$ok = imageavif( $image, $target, 75 );
+		$ok = @imageavif( $image, $target, 75 ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
 		imagedestroy( $image );
 
-		if ( ! $ok ) {
-			return new \WP_Error( 'omninox_write_failed', __( 'The AVIF copy could not be written.', 'omninox-site-toolkit') );
+		if ( ! $ok || ! file_exists( $target ) || ! $this->is_valid_converted_image( $target, 'avif' ) ) {
+			@unlink( $target ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
+			return new \WP_Error( 'omninox_write_failed', __( 'The AVIF copy could not be written.', 'omninox-site-toolkit' ) );
 		}
 
 		return true;
@@ -2880,15 +2845,19 @@ class MediaModule extends AbstractModule {
 		$imagick_avif = $imagick && in_array( 'AVIF', $formats, true );
 		$gd_webp      = function_exists( 'imagewebp' );
 		$gd_avif      = function_exists( 'imageavif' );
+		$wp_webp      = function_exists( 'wp_image_editor_supports' ) && wp_image_editor_supports( array( 'methods' => array( 'save' ), 'mime_type' => 'image/webp' ) );
+		$wp_avif      = function_exists( 'wp_image_editor_supports' ) && wp_image_editor_supports( array( 'methods' => array( 'save' ), 'mime_type' => 'image/avif' ) );
 
 		$parts = array();
 
-		if ( $imagick_webp || $gd_webp ) {
-			$parts[] = 'WebP (' . ( $imagick_webp ? 'Imagick' : 'GD' ) . ')';
+		if ( $wp_webp || $imagick_webp || $gd_webp ) {
+			$engine = $wp_webp ? 'WordPress Engine' : ( $imagick_webp ? 'Imagick' : 'GD' );
+			$parts[] = 'WebP (' . $engine . ')';
 		}
 
-		if ( $imagick_avif || $gd_avif ) {
-			$parts[] = 'AVIF (' . ( $imagick_avif ? 'Imagick' : 'GD' ) . ')';
+		if ( $wp_avif || $imagick_avif || $gd_avif ) {
+			$engine = $wp_avif ? 'WordPress Engine' : ( $imagick_avif ? 'Imagick' : 'GD' );
+			$parts[] = 'AVIF (' . $engine . ')';
 		}
 
 		return array(
@@ -2898,9 +2867,10 @@ class MediaModule extends AbstractModule {
 			'gd'           => function_exists( 'gd_info' ),
 			'gd_webp'      => $gd_webp,
 			'gd_avif'      => $gd_avif,
-			'webp'         => $imagick_webp || $gd_webp,
-			'avif'         => $imagick_avif || $gd_avif,
+			'webp'         => $wp_webp || $imagick_webp || $gd_webp,
+			'avif'         => $wp_avif || $imagick_avif || $gd_avif,
 			'memory_limit' => ini_get( 'memory_limit' ),
+			'list'         => ! empty( $parts ) ? implode( ', ', $parts ) : __( 'None (neither Imagick nor GD with WebP is installed)', 'omninox-site-toolkit' ),
 			'summary'      => $parts
 				? sprintf(
 					/* translators: %s: library formats */

@@ -111,10 +111,25 @@ class LicenseManager {
 
 	/**
 	 * Periodic background check.
+	 *
+	 * Allows previously activated licenses whose cached verification expired
+	 * to automatically revalidate after network connectivity returns.
 	 */
 	public function maybe_background_check() {
-		if ( $this->is_premium() ) {
+		$data     = (array) get_option( self::OPTION, array() );
+		$pro_data = (array) get_option( 'omninox_pro_license', array() );
+		$has_key  = ! empty( $data['key'] ) || ! empty( $pro_data['key'] );
+		$status   = ! empty( $pro_data['status'] ) ? $pro_data['status'] : ( $data['status'] ?? '' );
+
+		// Do not auto-revalidate explicitly deactivated or unlicensed states
+		if ( in_array( $status, array( 'deactivated', 'unlicensed', 'free' ), true ) ) {
+			return;
+		}
+
+		if ( $has_key ) {
 			$this->validate( false );
+			// Fire canonical scheduled hook and legacy compatibility hook
+			do_action( 'omninox_pro_validate_license' );
 			do_action( 'omninox_pro_background_check' );
 		}
 	}

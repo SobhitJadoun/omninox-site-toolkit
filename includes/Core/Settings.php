@@ -28,7 +28,9 @@ class Settings {
 	 * Load values on boot.
 	 */
 	public function boot() {
-		$this->values = wp_parse_args( (array) get_option( self::OPTION, get_option( 'omninox_settings', array() ) ), self::defaults() );
+		$stored       = (array) get_option( self::OPTION, get_option( 'omninox_settings', array() ) );
+		$defaults     = self::defaults();
+		$this->values = array_replace_recursive( $defaults, $stored );
 	}
 
 	/**
@@ -54,15 +56,21 @@ class Settings {
 			'add_webp_to_library'      => false,
 			'log_errors'               => true,
 			'optimizations'            => array(
-				'disable_emojis'       => false,
-				'disable_embeds'       => false,
-				'disable_dashicons'    => false,
+				'lazy_load'              => false,
+				'preload_lcp'            => false,
+				'defer_scripts'          => false,
+				'add_image_dimensions'   => false,
+				'minify_css'             => false,
+				'minify_js'              => false,
+				'optimize_fonts'         => false,
+				'browser_cache'          => false,
+				'clean_header'           => false,
+				'best_practices_shield'  => false,
+				'disable_emojis'         => false,
+				'disable_embeds'         => false,
+				'disable_dashicons'      => false,
 				'disable_jquery_migrate' => false,
-				'remove_query_strings' => false,
-				'lazy_load'            => false,
-				'minify_css'           => false,
-				'minify_js'            => false,
-				'optimize_fonts'       => false,
+				'remove_query_strings'   => false,
 			),
 			'hardening'                => array(
 				'disable_xmlrpc'         => false,
@@ -196,7 +204,15 @@ class Settings {
 		$input_opts = $input['optimizations'] ?? $this->values['optimizations'] ?? array();
 		if ( is_array( $input_opts ) ) {
 			foreach ( $defaults['optimizations'] as $opt_key => $opt_val ) {
-				$clean['optimizations'][ $opt_key ] = array_key_exists( $opt_key, $input_opts ) ? ! empty( $input_opts[ $opt_key ] ) : ! empty( $this->values['optimizations'][ $opt_key ] ?? false );
+				$clean['optimizations'][ $opt_key ] = array_key_exists( $opt_key, $input_opts )
+					? ! empty( $input_opts[ $opt_key ] )
+					: ! empty( $this->values['optimizations'][ $opt_key ] ?? false );
+			}
+			foreach ( $input_opts as $opt_key => $opt_val ) {
+				$clean_opt_key = sanitize_key( $opt_key );
+				if ( ! empty( $clean_opt_key ) && ! isset( $clean['optimizations'][ $clean_opt_key ] ) ) {
+					$clean['optimizations'][ $clean_opt_key ] = ! empty( $opt_val );
+				}
 			}
 		}
 

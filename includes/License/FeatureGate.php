@@ -38,12 +38,29 @@ class FeatureGate {
 				'*' => self::TIER_FREE,
 			),
 			'performance'   => array(
-				'*'             => self::TIER_FREE,
-				'minify_css'    => self::TIER_PRO,
-				'minify_js'     => self::TIER_PRO,
-				'lazy_load'     => self::TIER_PRO,
-				'delay_runtime' => self::TIER_PRO,
-				'critical_css'  => self::TIER_PRO,
+				'*'                      => self::TIER_FREE,
+				'lazy_load'              => self::TIER_FREE,
+				'preload_lcp'            => self::TIER_FREE,
+				'add_image_dimensions'   => self::TIER_FREE,
+				'defer_scripts'          => self::TIER_FREE,
+				'browser_cache'          => self::TIER_FREE,
+				'best_practices_shield'  => self::TIER_FREE,
+				'clean_header'           => self::TIER_FREE,
+				'minify_css'             => self::TIER_FREE,
+				'minify_js'              => self::TIER_FREE,
+				'optimize_fonts'         => self::TIER_FREE,
+				'disable_emojis'         => self::TIER_FREE,
+				'disable_embeds'         => self::TIER_FREE,
+				'disable_dashicons'      => self::TIER_FREE,
+				'disable_jquery_migrate' => self::TIER_FREE,
+				'remove_query_strings'   => self::TIER_FREE,
+				'apply_safe_profile'     => self::TIER_FREE,
+				'apply_balanced_profile' => self::TIER_FREE,
+				'rollback_checkpoint'    => self::TIER_FREE,
+				'run_psi_audit'          => self::TIER_FREE,
+				'delay_runtime'          => self::TIER_PRO,
+				'critical_css'           => self::TIER_PRO,
+				'advanced_profiles'      => self::TIER_PRO,
 			),
 			'assets'        => array(
 				'*' => self::TIER_PRO,
@@ -81,6 +98,7 @@ class FeatureGate {
 			),
 			'accessibility' => array(
 				'*'                  => self::TIER_FREE,
+				'a11y_remediation'   => self::TIER_FREE,
 				'fill_alt_filenames' => self::TIER_PRO,
 				'bulk_alt_editor'    => self::TIER_PRO,
 				'toolbar'            => self::TIER_PRO,
@@ -89,12 +107,20 @@ class FeatureGate {
 				'*'                      => self::TIER_FREE,
 				'xmlrpc_block'           => self::TIER_PRO,
 				'login_limit'            => self::TIER_PRO,
+				'limit_logins'           => self::TIER_PRO,
 				'set_login_limits'       => self::TIER_PRO,
 				'block_user_enumeration' => self::TIER_PRO,
 				'unblock_ip'             => self::TIER_PRO,
 				'clear_lockouts'         => self::TIER_PRO,
 				'malware_scan'           => self::TIER_PRO,
 				'block_ip'               => self::TIER_PRO,
+				'block_ips'              => self::TIER_PRO,
+				'disable_xmlrpc'         => self::TIER_FREE,
+				'disable_file_editor'    => self::TIER_FREE,
+				'hide_wp_version'        => self::TIER_FREE,
+				'two_factor'             => self::TIER_FREE,
+				'honeypot'               => self::TIER_FREE,
+				'trusted_proxy'          => self::TIER_FREE,
 			),
 			'conflicts'     => array(
 				'*' => self::TIER_FREE,
@@ -136,10 +162,59 @@ class FeatureGate {
 	/**
 	 * The full tier map.
 	 *
+	 * Applies the filter exactly once and ensures an array structure.
+	 *
 	 * @return array
 	 */
 	public static function map() {
-		return (array) apply_filters( 'omninox_feature_tier_map', apply_filters( 'omninox_feature_tier_map', self::raw_map() ) );
+		$map = apply_filters( 'omninox_feature_tier_map', self::raw_map() );
+		return is_array( $map ) ? $map : self::raw_map();
+	}
+
+	/**
+	 * Normalize feature and action identifiers from legacy aliases.
+	 *
+	 * @param string      $module_id Module identifier.
+	 * @param string|null $action_id Action identifier.
+	 * @return string|null
+	 */
+	public static function normalize_feature_id( $module_id, $action_id ) {
+		if ( empty( $action_id ) ) {
+			return $action_id;
+		}
+
+		$aliases = array(
+			'security' => array(
+				'limit_logins' => 'login_limit',
+				'block_ips'    => 'block_ip',
+			),
+		);
+
+		return $aliases[ $module_id ][ $action_id ] ?? $action_id;
+	}
+
+	/**
+	 * Check if an unknown action identifier represents a premium action pattern.
+	 *
+	 * @param string      $module_id Module identifier.
+	 * @param string|null $action_id Action identifier.
+	 * @return bool
+	 */
+	public static function is_known_premium_action( $module_id, $action_id ) {
+		if ( empty( $action_id ) ) {
+			return false;
+		}
+
+		$action_lower = strtolower( (string) $action_id );
+		$indicators   = array( 'pro', 'premium', 'advanced', 'export', 'backup', 'restore' );
+
+		foreach ( $indicators as $indicator ) {
+			if ( false !== strpos( $action_lower, $indicator ) ) {
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	/**
@@ -158,8 +233,17 @@ class FeatureGate {
 
 		$module_rules = $map[ $module_id ];
 
-		if ( null !== $action_id && isset( $module_rules[ $action_id ] ) ) {
-			return $module_rules[ $action_id ];
+		if ( null !== $action_id ) {
+			$action_id = self::normalize_feature_id( $module_id, $action_id );
+
+			if ( isset( $module_rules[ $action_id ] ) ) {
+				return $module_rules[ $action_id ];
+			}
+
+			// Prevent unknown premium actions from silently falling back to Free
+			if ( self::is_known_premium_action( $module_id, $action_id ) ) {
+				return self::TIER_PRO;
+			}
 		}
 
 		if ( isset( $module_rules['*'] ) ) {

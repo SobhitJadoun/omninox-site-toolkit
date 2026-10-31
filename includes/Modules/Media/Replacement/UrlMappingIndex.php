@@ -123,6 +123,17 @@ class UrlMappingIndex {
 						$new_exists = file_exists( $new_path );
 
 						if ( $old_exists && $new_exists ) {
+							$new_size = @filesize( $new_path );
+							if ( false === $new_size || $new_size < 128 ) {
+								continue;
+							}
+
+							// Apply odd-byte padding correction if missing
+							if ( 'webp' === $fmt && ( $new_size % 2 === 1 ) ) {
+								@file_put_contents( $new_path, "\0", FILE_APPEND );
+								clearstatcache( true, $new_path );
+							}
+
 							$old_url = $baseurl . $cand_rel;
 							$new_url = $baseurl . $conv_relative;
 

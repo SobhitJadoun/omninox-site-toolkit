@@ -48,14 +48,14 @@ class Security {
 	);
 
 	/**
-	 * Maximum privileged operations per user per minute.
+	 * Maximum privileged operations per user per minute for standard UI clicks.
 	 */
-	const RATE_LIMIT = 60;
+	const RATE_LIMIT = 300;
 
 	/**
 	 * Higher allowance for batch-driven operations.
 	 */
-	const RATE_LIMIT_BATCH = 1200;
+	const RATE_LIMIT_BATCH = 6000;
 
 	/**
 	 * Operations that run as request batches.
@@ -77,7 +77,74 @@ class Security {
 		'media/bulk_convert_avif',
 		'media/bulk_compress',
 		'media/regenerate_thumbnails',
+		'media/replace_original',
+		'media/replace_originals',
+		'media/replace_originals_with_webp',
+		'media/replace_originals_with_avif',
+		'media/restore_original',
+		'media/restore_originals',
+		'media/restore_replaced_originals',
+		'media/url_replacement_start',
+		'media/url_replacement_step',
+		'media/url_replacement_pause',
+		'media/url_replacement_resume',
+		'media/url_replacement_cancel',
+		'media/url_replacement_rollback',
+		'media/url_replacement_summary',
+		'media/url_replacement_export_csv',
+		'media/unused_scan_start',
+		'media/unused_scan_step',
+		'media/unused_scan_pause',
+		'media/unused_scan_resume',
+		'media/unused_scan_cancel',
+		'media/unused_get_results',
+		'media/unused_quarantine',
+		'media/unused_restore',
+		'media/unused_delete',
+		'media/unused_set_protection',
+		'media/unused_get_quarantined',
+		'media/unused_get_history',
+		'database/search_replace',
+		'search/search_replace',
 	);
+
+	/**
+	 * Determine whether an operation qualifies for the higher batch rate limit.
+	 *
+	 * @param string $operation Operation identifier.
+	 * @return bool
+	 */
+	public static function is_batch_operation( $operation ) {
+		if ( in_array( $operation, self::BATCH_OPERATIONS, true ) ) {
+			return true;
+		}
+
+		$op = strtolower( (string) $operation );
+		$tokens = array(
+			'step',
+			'batch',
+			'chunk',
+			'url_replacement',
+			'unused_',
+			'backup',
+			'restore',
+			'convert',
+			'compress',
+			'replace',
+			'regenerate',
+			'search_replace',
+			'clean_',
+			'optimize_',
+		);
+
+		foreach ( $tokens as $token ) {
+			if ( false !== strpos( $op, $token ) ) {
+				return true;
+			}
+		}
+
+		return false;
+	}
 
 	/**
 	 * Assert the current user may run a privileged operation, or verify dedicated restore continuation token.
@@ -92,7 +159,7 @@ class Security {
 				return self::deny( 'omninox_network_only', __( 'This operation is restricted to network administrators on a multisite install.', 'omninox-site-toolkit' ), 403, $operation );
 			}
 
-			$limited = self::rate_limit( in_array( $operation, self::BATCH_OPERATIONS, true ) );
+			$limited = self::rate_limit( self::is_batch_operation( $operation ) );
 
 			if ( is_wp_error( $limited ) ) {
 				return $limited;
