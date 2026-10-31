@@ -206,7 +206,7 @@ https://netinnovix.com/plugins/omninox-site-toolkit
 == Upgrade Notice ==
 
 = 1.1.1 =
-Smart Unused Image Detector with multi-provider reference index (Gutenberg, Elementor, Divi, Bricks, Themes, WooCommerce, and Custom CSS), safe isolation quarantine, and zero-loss restoration.
+High-performance Image URL Replacement Engine with rollback journal, Smart Unused Image Detector with multi-provider reference index, lossless media compression engine, and advanced performance diagnostics.
 
 = 1.1.0 =
 Defensive security hardening, WordPress 6.7 compatibility, updated asset presentation, and full version parity with Pro add-on.
@@ -223,11 +223,14 @@ Security and WordPress.org compliance improvements, including safer title output
 == Changelog ==
 
 = 1.1.1 =
+* Feature: High-Performance Image URL Replacement Engine with C-level multi-pattern matching, serialization safety, keyset pagination, and automated rollback journal.
 * Feature: Smart Unused Image Detector with AST reference detection across Gutenberg, Elementor, Divi, Bricks, Beaver Builder, Themes, WooCommerce, and Custom CSS.
 * Feature: Safe Quarantine subsystem isolating images into protected storage with JSON restoration manifests and zero-loss restore.
+* Feature: Original Image Compression Engine supporting lossless and lossy optimization with resumable batch processing.
+* Feature: Advanced Performance Diagnostics with Elementor output buffer optimization and browser cache rules.
 * Feature: Dual-tab Media Manager interface (Unused Media & Safe Cleanup + Optimization & Formats) with Lightbox preview, references breakdown, and floating bulk action bar.
-* Performance: Non-blocking batch scanning with execution time budgeting and memory ceiling guards.
-* Security: Server-side revalidation before deletion and permission enforcement.
+* Performance: Non-blocking batch scanning and URL replacement with execution time budgeting and memory ceiling guards.
+* Security: Server-side revalidation before deletion, rollback journaling, and permission enforcement.
 
 = 1.1.0 =
 * Feature: Upgraded documentation, workflow guides, and admin asset presentation.
